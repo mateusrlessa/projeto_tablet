@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hubsync
+      POSTGRES_USER: hubsync
+      POSTGRES_PASSWORD: hubsync
+    ports:
+      - "5433:5432"
+    volumes:
+      - hubsync_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hubsync -d hubsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgres://hubsync:hubsync@db:5432/hubsync
+    ports:
+      - "3002:3001"
+
+volumes:
+  hubsync_pgdata:
