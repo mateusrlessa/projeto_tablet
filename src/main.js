@@ -218,6 +218,17 @@ function passwordRuleMessage(code) {
   return messages[code] || 'A senha não atende aos requisitos de segurança.';
 }
 
+function evaluatePasswordRules(password) {
+  const value = String(password || '');
+  return {
+    minLength: value.length >= 10,
+    upper: /[A-Z]/.test(value),
+    lower: /[a-z]/.test(value),
+    digit: /\d/.test(value),
+    symbol: /[^A-Za-z0-9]/.test(value),
+  };
+}
+
 function renderAuth() {
   const isLogin = state.authMode === 'login';
   const isForgot = state.authMode === 'forgot';
@@ -267,12 +278,25 @@ function renderAuth() {
       </label>
       <label>
         <span>Nova senha</span>
-        <input name="newPassword" type="password" minlength="10" placeholder="Mínimo 10 caracteres" required />
+        <div class="password-field">
+          <input id="resetNewPassword" name="newPassword" type="password" minlength="10" placeholder="Mínimo 10 caracteres" required />
+          <button class="password-toggle" type="button" data-password-toggle="resetNewPassword" aria-label="Mostrar senha">👁</button>
+        </div>
       </label>
       <label>
         <span>Confirmar nova senha</span>
-        <input name="confirmPassword" type="password" minlength="10" placeholder="Repita a senha" required />
+        <div class="password-field">
+          <input id="resetConfirmPassword" name="confirmPassword" type="password" minlength="10" placeholder="Repita a senha" required />
+          <button class="password-toggle" type="button" data-password-toggle="resetConfirmPassword" aria-label="Mostrar senha">👁</button>
+        </div>
       </label>
+      <ul class="password-rules" data-password-rules-for="resetNewPassword">
+        <li data-rule="minLength">Mínimo 10 caracteres</li>
+        <li data-rule="upper">1 letra maiúscula</li>
+        <li data-rule="lower">1 letra minúscula</li>
+        <li data-rule="digit">1 número</li>
+        <li data-rule="symbol">1 símbolo</li>
+      </ul>
       <p class="auth-hint">${passwordRulesHint}</p>
     `
     : '';
@@ -311,9 +335,21 @@ function renderAuth() {
             </label>
             <label>
               <span>Senha</span>
-              <input name="password" type="password" minlength="10" placeholder="Mínimo 10 caracteres" required />
+              <div class="password-field">
+                <input id="registerPassword" name="password" type="password" minlength="10" placeholder="Mínimo 10 caracteres" required />
+                <button class="password-toggle" type="button" data-password-toggle="registerPassword" aria-label="Mostrar senha">👁</button>
+              </div>
             </label>
-            ${!isLogin ? `<p class="auth-hint">${passwordRulesHint}</p>` : ''}
+            ${!isLogin ? `
+              <ul class="password-rules" data-password-rules-for="registerPassword">
+                <li data-rule="minLength">Mínimo 10 caracteres</li>
+                <li data-rule="upper">1 letra maiúscula</li>
+                <li data-rule="lower">1 letra minúscula</li>
+                <li data-rule="digit">1 número</li>
+                <li data-rule="symbol">1 símbolo</li>
+              </ul>
+              <p class="auth-hint">${passwordRulesHint}</p>
+            ` : ''}
             ${forgotLinkAction}
             ${resendVerificationAction}
           ` : ''}
@@ -333,6 +369,39 @@ function renderAuth() {
   const forgotPassword = document.querySelector('#forgotPassword');
   const resendVerification = document.querySelector('#resendVerification');
   const backToLogin = document.querySelector('#backToLogin');
+
+  const passwordToggleButtons = document.querySelectorAll('[data-password-toggle]');
+  passwordToggleButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      const inputId = button.getAttribute('data-password-toggle');
+      const input = inputId ? document.querySelector(`#${inputId}`) : null;
+      if (!input) return;
+
+      const isHidden = input.getAttribute('type') === 'password';
+      input.setAttribute('type', isHidden ? 'text' : 'password');
+      button.textContent = isHidden ? '🙈' : '👁';
+      button.setAttribute('aria-label', isHidden ? 'Ocultar senha' : 'Mostrar senha');
+    });
+  });
+
+  const passwordRuleLists = document.querySelectorAll('[data-password-rules-for]');
+  passwordRuleLists.forEach((list) => {
+    const inputId = list.getAttribute('data-password-rules-for');
+    const input = inputId ? document.querySelector(`#${inputId}`) : null;
+    if (!input) return;
+
+    const paintRules = () => {
+      const rules = evaluatePasswordRules(input.value);
+      list.querySelectorAll('li[data-rule]').forEach((item) => {
+        const rule = item.getAttribute('data-rule');
+        const ok = Boolean(rule && rules[rule]);
+        item.classList.toggle('ok', ok);
+      });
+    };
+
+    paintRules();
+    input.addEventListener('input', paintRules);
+  });
 
   if (toggle) {
     toggle.addEventListener('click', () => {
