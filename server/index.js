@@ -1318,8 +1318,16 @@ app.delete('/api/assets/:id', requireAuth, async (req, res, next) => {
 
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
-app.get('*', (_req, res) => {
+app.get('*', (req, res) => {
   if (isProduction) {
+    // Avoid serving index.html for missing static assets (e.g. stale cached JS hash).
+    if (path.extname(req.path)) {
+      res.status(404).send('not-found');
+      return;
+    }
+
+    // Ensure HTML entrypoint is always fresh to prevent white screens from stale asset hashes.
+    res.set('Cache-Control', 'no-store');
     res.sendFile(path.join(distPath, 'index.html'));
     return;
   }
