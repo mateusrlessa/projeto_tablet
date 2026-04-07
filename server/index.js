@@ -381,20 +381,56 @@ async function logAuditEvent({ actorUser, targetUserId, targetEmail, eventType, 
 
 async function sendVerificationEmail({ email, username, token }) {
   const verifyUrl = `${frontendBaseUrl}/#verify-email?token=${token}`;
+  const logoUrl = String(process.env.EMAIL_LOGO_URL || '').trim();
+  const logoHtml = logoUrl
+    ? `<img src="${logoUrl}" alt="HubSync" width="48" height="48" style="display:block;border:0;border-radius:12px;" />`
+    : `<div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#5b8cff,#2b5df0);color:#ffffff;font-weight:800;font-size:18px;line-height:48px;text-align:center;">HS</div>`;
+
   return sendMail({
     to: email,
     subject: 'HubSync: confirme seu e-mail',
     html: `
-      <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
-        <h2 style="color: #2563eb; margin-bottom: 8px;">Confirmação de e-mail</h2>
-        <p>Olá, <strong>${username}</strong>.</p>
-        <p>Confirme seu e-mail para finalizar a criação da conta no HubSync.</p>
-        <p>
-          <a href="${verifyUrl}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#2563eb;color:#fff;text-decoration:none;">Confirmar e-mail</a>
-        </p>
-        <p>Se o botão não funcionar, use este link:</p>
-        <p>${verifyUrl}</p>
-        <p>Este link expira em 24 horas.</p>
+      <div style="margin:0;padding:24px 12px;background:#f3f6ff;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #dbe6ff;">
+          <tr>
+            <td style="padding:24px 24px 16px;background:linear-gradient(135deg,#0f1f4d,#143a8f);color:#ffffff;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="width:56px;vertical-align:middle;">${logoHtml}</td>
+                  <td style="vertical-align:middle;padding-left:12px;">
+                    <div style="font-size:22px;font-weight:800;letter-spacing:0.2px;">HubSync</div>
+                    <div style="font-size:13px;opacity:0.9;">Painel de tablets TI</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:26px 24px 8px;">
+              <h1 style="margin:0 0 10px;font-size:24px;line-height:1.2;color:#102045;">Confirme seu e-mail</h1>
+              <p style="margin:0 0 14px;font-size:15px;line-height:1.7;color:#334155;">Olá, <strong>${username}</strong>. Falta apenas um passo para ativar sua conta na HubSync.</p>
+              <p style="margin:0 0 22px;font-size:15px;line-height:1.7;color:#334155;">Clique no botão abaixo para confirmar seu endereço de e-mail:</p>
+              <a href="${verifyUrl}" style="display:inline-block;padding:13px 22px;border-radius:12px;background:linear-gradient(135deg,#2f6bff,#1749d4);color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;">Confirmar e-mail</a>
+              <div style="margin-top:24px;padding:14px 16px;border-radius:12px;background:#f8fbff;border:1px solid #dbeafe;font-size:13px;color:#334155;line-height:1.6;">
+                Se o botão não funcionar, copie e cole este link no navegador:<br />
+                <a href="${verifyUrl}" style="word-break:break-all;color:#1d4ed8;text-decoration:none;">${verifyUrl}</a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 24px 24px;">
+              <div style="margin-top:6px;padding:12px 14px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#7c2d12;font-size:13px;line-height:1.5;">
+                Este link expira em 24 horas. Se você não solicitou este cadastro, ignore este e-mail.
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b;text-align:center;">
+              HubSync • Hub Local<br />
+              Mensagem automatica de verificacao de conta.
+            </td>
+          </tr>
+        </table>
       </div>
     `,
   });
