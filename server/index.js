@@ -1371,6 +1371,100 @@ app.delete('/api/assets/:id', requireAuth, async (req, res, next) => {
   }
 });
 
+app.get('/api/admin/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const usersResult = await query('SELECT COUNT(*) as count FROM users');
+    const assetsResult = await query('SELECT COUNT(*) as count FROM assets');
+    const verifiedUsersResult = await query('SELECT COUNT(*) as count FROM users WHERE email_verified_at IS NOT NULL');
+    const overdueAssetsResult = await query('SELECT COUNT(*) as count FROM assets WHERE renewal_due_at < NOW()');
+    const dueSoonAssetsResult = await query('SELECT COUNT(*) as count FROM assets WHERE renewal_due_at >= NOW() AND renewal_due_at <= NOW() + INTERVAL \'7 days\'');
+    const auditEventsResult = await query('SELECT COUNT(*) as count FROM audit_events');
+    
+    const recentAuditResult = await query(
+      'SELECT event_type, COUNT(*) as count FROM audit_events WHERE created_at > NOW() - INTERVAL \'7 days\' GROUP BY event_type ORDER BY count DESC LIMIT 5'
+    );
+
+    res.json({
+      totalUsers: parseInt(usersResult.rows[0].count),
+      verifiedUsers: parseInt(verifiedUsersResult.rows[0].count),
+      totalAssets: parseInt(assetsResult.rows[0].count),
+      overdueAssets: parseInt(overdueAssetsResult.rows[0].count),
+      dueSoonAssets: parseInt(dueSoonAssetsResult.rows[0].count),
+      totalAuditEvents: parseInt(auditEventsResult.rows[0].count),
+      recentEventTypes: recentAuditResult.rows.map((row) => ({
+        eventType: row.event_type,
+        count: parseInt(row.count),
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/admin/audit', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 500);
+    const offset = Math.max(Number(req.query.offset || 0), 0);
+    const eventType = String(req.query.eventType || '').trim();
+
+    let whereClause = '';
+    const params = [];
+
+    if (eventType) {
+      whereClause = 'WHERE event_type = $1';
+      params.push(eventType);
+    }
+
+    const countResult = await query(
+      `SELECT COUNT(*) as count FROM audit_events ${whereClause}`,
+      params
+    );
+
+    const paramOffset = eventType ? 2 : 1;
+    const result = await query(
+      `SELECT id, actor_user_id, actor_email, target_user_id, target_email, event_type, event_payload, created_at
+       FROM audit_events
+       ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT $${paramOffset} OFFSET $${paramOffset + 1}`,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      total: parseInt(countResult.rows[0].count),
+      limit,
+      offset,
+      events: result.rows.map((row) => ({
+        id: row.id,
+        actorUserId: row.actor_user_id,
+        actorEmail: row.actor_email,
+        targetUserId: row.target_user_id,
+        targetEmail: row.target_email,
+        eventType: row.event_type,
+        payload: row.event_payload,
+        createdAt: row.created_at,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/admin/system-info', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    res.json({
+      nodeEnv: process.env.NODE_ENV,
+      port,
+      smtpConfigured: Boolean(mailer),
+      authSecureStatus: isAuthSecretWeak ? 'weak' : 'strong',
+      corsOrigins: allowedOrigins,
+      uptime: process.uptime(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
 app.get('*', (req, res) => {
