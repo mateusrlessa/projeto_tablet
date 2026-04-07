@@ -90,6 +90,15 @@ const state = {
   search: '',
   loading: true,
   editingAssetId: null,
+  adminMode: false,
+  adminDashboard: null,
+  adminAuditEvents: [],
+  adminSystemInfo: null,
+  adminLoading: false,
+  adminAuditPage: 0,
+  adminAuditLimit: 25,
+  adminAuditTotal: 0,
+  adminAuditEventTypeFilter: '',
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
@@ -587,9 +596,241 @@ function renderAuth() {
   });
 }
 
+function renderAdminPanel() {
+  if (!isAdminUser()) {
+    state.adminMode = false;
+    render();
+    return;
+  }
+
+  const dashboard = state.adminDashboard || {};
+  const systemInfo = state.adminSystemInfo || {};
+  const auditEvents = state.adminAuditEvents || [];
+  const totalPages = Math.ceil(state.adminAuditTotal / state.adminAuditLimit);
+  const currentPage = state.adminAuditPage + 1;
+  const canPrevAudit = state.adminAuditPage > 0;
+  const canNextAudit = currentPage < totalPages;
+
+  app.innerHTML = `
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">⚡</div>
+          <div>
+            <h1>HubSync</h1>
+            <p>Painel Administrativo</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-button" data-action="back-to-dashboard">← Dashboard normal</button>
+          <span class="user-chip">${state.user.username} (Admin)</span>
+          <button class="icon-button" data-action="logout" aria-label="Sair" title="Sair">
+            <span>↗</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="content admin-content">
+        <nav class="admin-nav">
+          <button class="admin-nav-item ${state.adminAuditEventTypeFilter === '' ? 'active' : ''}" data-admin-section="overview">📊 Visão Geral</button>
+          <button class="admin-nav-item ${state.adminAuditEventTypeFilter !== '' || state.adminAuditEvents.length > 0 ? 'active' : ''}" data-admin-section="audit">📋 Auditoria</button>
+          <button class="admin-nav-item" data-admin-section="system">⚙️ Sistema</button>
+          <button class="admin-nav-item" data-admin-section="users" data-action="open-users">👥 Usuarios</button>
+        </nav>
+
+        <section class="admin-panel-section admin-overview">
+          <div class="admin-stats-grid">
+            <article class="admin-stat-card">
+              <h4>Usuários Totais</h4>
+              <strong class="admin-stat-value">${dashboard.totalUsers || 0}</strong>
+              <p class="admin-stat-subtitle">${dashboard.verifiedUsers || 0} verificados</p>
+            </article>
+            <article class="admin-stat-card">
+              <h4>Ativos Totais</h4>
+              <strong class="admin-stat-value">${dashboard.totalAssets || 0}</strong>
+              <p class="admin-stat-subtitle">${dashboard.dueSoonAssets || 0} próximos do vencimento</p>
+            </article>
+            <article class="admin-stat-card">
+              <h4>Vencidos</h4>
+              <strong class="admin-stat-value" style="color: #dc2626;">${dashboard.overdueAssets || 0}</strong>
+              <p class="admin-stat-subtitle">Precisam atenção</p>
+            </article>
+            <article class="admin-stat-card">
+              <h4>Eventos de Auditoria</h4>
+              <strong class="admin-stat-value">${dashboard.totalAuditEvents || 0}</strong>
+              <p class="admin-stat-subtitle">Últimos 7 dias</p>
+            </article>
+          </div>
+
+          ${dashboard.recentEventTypes && dashboard.recentEventTypes.length > 0 ? `
+            <div class="admin-recent-events">
+              <h3>Eventos Recentes (7 dias)</h3>
+              <ul class="admin-event-list">
+                ${dashboard.recentEventTypes.map((event) => `
+                  <li>
+                    <span class="event-type-badge">${event.eventType}</span>
+                    <strong>${event.count}</strong> ocorrências
+                  </li>
+                `).join('')}
+              </ul>
+            </div>
+          ` : ''}
+        </section>
+
+        <section class="admin-panel-section admin-audit">
+          <div class="admin-audit-controls">
+            <input
+              type="text"
+              id="auditEventTypeFilter"
+              placeholder="Filtrar por tipo de evento (ex.: user.created)..."
+              class="admin-filter-input"
+              value="${state.adminAuditEventTypeFilter}"
+            />
+            <button class="primary-button" id="applyAuditFilter">🔍 Filtrar</button>
+          </div>
+
+          ${auditEvents.length > 0 ? `
+            <div class="admin-audit-table-wrapper">
+              <table class="admin-audit-table">
+                <thead>
+                  <tr>
+                    <th>Data/Hora</th>
+                    <th>Tipo de Evento</th>
+                    <th>Ator</th>
+                    <th>Alvo</th>
+                    <th>IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${auditEvents.map((event) => `
+                    <tr>
+                      <td>${new Date(event.createdAt).toLocaleString('pt-BR')}</td>
+                      <td><span class="audit-event-type">${event.eventType}</span></td>
+                      <td>${event.actorEmail || '—'}</td>
+                      <td>${event.targetEmail || '—'}</td>
+                      <td><code>${event.payload?.requestIp || '—'}</code></td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="admin-pagination">
+              <button class="ghost-button" id="auditPrevBtn" ${!canPrevAudit ? 'disabled' : ''}>← Anterior</button>
+              <span>Página ${currentPage} de ${totalPages} (Total: ${state.adminAuditTotal})</span>
+              <button class="ghost-button" id="auditNextBtn" ${!canNextAudit ? 'disabled' : ''}>Próxima →</button>
+            </div>
+          ` : '<div class="empty-state">Nenhum evento encontrado.</div>'}
+        </section>
+
+        <section class="admin-panel-section admin-system">
+          ${systemInfo ? `
+            <div class="admin-system-info">
+              <h3>Informações do Sistema</h3>
+              <div class="admin-system-grid">
+                <div class="info-item">
+                  <span>Ambiente</span>
+                  <strong>${systemInfo.nodeEnv || '—'}</strong>
+                </div>
+                <div class="info-item">
+                  <span>Porta</span>
+                  <strong>${systemInfo.port || '—'}</strong>
+                </div>
+                <div class="info-item">
+                  <span>E-mail (SMTP)</span>
+                  <strong>${systemInfo.smtpConfigured ? '✓ Ativo' : '✗ Desativado'}</strong>
+                </div>
+                <div class="info-item">
+                  <span>AUTH_SECRET</span>
+                  <strong>${systemInfo.authSecureStatus === 'strong' ? '✓ Seguro' : '⚠️ Fraco'}</strong>
+                </div>
+                <div class="info-item">
+                  <span>Uptime (segundos)</span>
+                  <strong>${Math.round(systemInfo.uptime || 0)}</strong>
+                </div>
+                <div class="info-item">
+                  <span>CORS Origins</span>
+                  <strong>${(systemInfo.corsOrigins || []).join(', ') || '—'}</strong>
+                </div>
+              </div>
+            </div>
+          ` : '<div class="empty-state">Carregando informações do sistema...</div>'}
+        </section>
+      </main>
+    </div>
+  `;
+
+  const backBtn = document.querySelector('[data-action="back-to-dashboard"]');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => {
+      state.adminMode = false;
+      render();
+    });
+  }
+
+  const logoutButton = document.querySelector('[data-action="logout"]');
+  if (logoutButton) {
+    logoutButton.addEventListener('click', () => {
+      state.user = null;
+      state.token = '';
+      state.assets = [];
+      state.users = [];
+      state.usersModalOpen = false;
+      state.adminMode = false;
+      safeRemoveStorage(tokenStorageKey);
+      render();
+    });
+  }
+
+  const openUsersButton = document.querySelector('[data-action="open-users"]');
+  if (openUsersButton) {
+    openUsersButton.addEventListener('click', async () => {
+      state.usersModalOpen = true;
+      state.usersLoading = true;
+      state.usersError = '';
+      renderAdminPanel();
+      await loadUsers();
+    });
+  }
+
+  const applyFilterBtn = document.querySelector('#applyAuditFilter');
+  if (applyFilterBtn) {
+    applyFilterBtn.addEventListener('click', async () => {
+      const input = document.querySelector('#auditEventTypeFilter');
+      state.adminAuditEventTypeFilter = input.value.trim();
+      state.adminAuditPage = 0;
+      await loadAdminAudit();
+      renderAdminPanel();
+    });
+  }
+
+  const prevBtn = document.querySelector('#auditPrevBtn');
+  if (prevBtn && canPrevAudit) {
+    prevBtn.addEventListener('click', async () => {
+      state.adminAuditPage -= 1;
+      await loadAdminAudit();
+      renderAdminPanel();
+    });
+  }
+
+  const nextBtn = document.querySelector('#auditNextBtn');
+  if (nextBtn && canNextAudit) {
+    nextBtn.addEventListener('click', async () => {
+      state.adminAuditPage += 1;
+      await loadAdminAudit();
+      renderAdminPanel();
+    });
+  }
+}
+
 function render() {
   if (!state.token || !state.user) {
     renderAuth();
+    return;
+  }
+
+  if (state.adminMode && isAdminUser()) {
+    renderAdminPanel();
     return;
   }
 
@@ -620,6 +861,7 @@ function render() {
           </div>
         </div>
         <div class="topbar-actions">
+          ${isAdminUser() ? '<button class="danger-button" data-action="open-admin">🔑 Painel Admin</button>' : ''}
           ${isAdminUser() ? '<button class="ghost-button" data-action="open-users">Gerenciar Acessos</button>' : ''}
           <span class="user-chip">${state.user.username}</span>
           <button class="icon-button" aria-label="Alternar tema" title="Alternar tema">
@@ -860,11 +1102,22 @@ function bindEvents() {
   const usersModal = document.querySelector('#usersModal');
   const closeUsersButton = usersModal ? usersModal.querySelector('button[value="close-users"]') : null;
   const userCreateForm = document.querySelector('#userCreateForm');
+  const openAdminButton = document.querySelector('[data-action="open-admin"]');
   const openUsersButton = document.querySelector('[data-action="open-users"]');
   const logoutButton = document.querySelector('[data-action="logout"]');
   const openFormButton = document.querySelector('[data-action="open-form"]');
   const resolveOverdueButton = document.querySelector('[data-action="resolve-overdue"]');
   const notificationPrefsForm = document.querySelector('#notificationPrefsForm');
+
+  if (openAdminButton) {
+    openAdminButton.addEventListener('click', async () => {
+      state.adminMode = true;
+      await loadAdminDashboard();
+      await loadAdminAudit();
+      await loadAdminSystemInfo();
+      render();
+    });
+  }
 
   if (openUsersButton) {
     openUsersButton.addEventListener('click', async () => {
@@ -1204,6 +1457,58 @@ async function loadNotificationPreferences() {
   }
 
   state.notificationPrefsLoading = false;
+}
+
+async function loadAdminDashboard() {
+  state.adminLoading = true;
+
+  try {
+    const response = await apiFetch('/api/admin/dashboard');
+    if (response.ok) {
+      state.adminDashboard = await response.json();
+    }
+  } catch {
+    state.adminDashboard = null;
+  }
+
+  state.adminLoading = false;
+}
+
+async function loadAdminAudit() {
+  state.adminLoading = true;
+
+  try {
+    const offset = state.adminAuditPage * state.adminAuditLimit;
+    const params = new URLSearchParams({
+      limit: state.adminAuditLimit,
+      offset,
+    });
+    if (state.adminAuditEventTypeFilter) {
+      params.append('eventType', state.adminAuditEventTypeFilter);
+    }
+
+    const response = await apiFetch(`/api/admin/audit?${params.toString()}`);
+    if (response.ok) {
+      const data = await response.json();
+      state.adminAuditEvents = data.events;
+      state.adminAuditTotal = data.total;
+    }
+  } catch {
+    state.adminAuditEvents = [];
+  }
+
+  state.adminLoading = false;
+}
+
+async function loadAdminSystemInfo() {
+  try {
+    const response = await apiFetch('/api/admin/system-info');
+    if (response.ok) {
+      state.adminSystemInfo = await response.json();
+    }
+  } catch {
+    state.adminSystemInfo = null;
+  }
 }
 
 async function bootstrap() {
