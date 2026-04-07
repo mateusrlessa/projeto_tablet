@@ -1,6 +1,40 @@
 import './styles.css';
 
-const app = document.querySelector('#app');
+let app = document.querySelector('#app');
+if (!app) {
+  app = document.createElement('div');
+  app.id = 'app';
+  document.body.appendChild(app);
+}
+
+function renderFatalError(message) {
+  app.innerHTML = `
+    <div class="auth-shell">
+      <div class="auth-card">
+        <div class="brand auth-brand">
+          <div class="brand-mark">⚡</div>
+          <div>
+            <h1>HubSync</h1>
+            <p>Painel de tablets TI</p>
+          </div>
+        </div>
+        <h2>Falha ao carregar</h2>
+        <p class="auth-error">${message}</p>
+      </div>
+    </div>
+  `;
+}
+
+window.addEventListener('error', (event) => {
+  renderFatalError(event?.message || 'Erro inesperado no navegador.');
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event?.reason;
+  const message = reason?.message || String(reason || 'Falha inesperada ao inicializar.');
+  renderFatalError(message);
+});
+
 const tokenStorageKey = 'hubsync_auth_token';
 let refreshTimer = null;
 
