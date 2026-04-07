@@ -97,6 +97,55 @@ a:focus-visible {
   outline: 0;
 }
 
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 46px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d6e3ff;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
+}
+
+.password-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.password-rules li {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.password-rules li::before {
+  content: '• ';
+  color: var(--muted);
+}
+
+.password-rules li.ok {
+  color: #9df5c9;
+}
+
+.password-rules li.ok::before {
+  content: '✓ ';
+  color: #23d9a0;
+}
+
 .auth-toggle {
   width: 100%;
 }
