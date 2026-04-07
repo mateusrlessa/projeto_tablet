@@ -38,9 +38,33 @@ window.addEventListener('unhandledrejection', (event) => {
 const tokenStorageKey = 'hubsync_auth_token';
 let refreshTimer = null;
 
+function safeGetStorage(key) {
+  try {
+    return localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
+}
+
+function safeSetStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures so the UI can continue rendering.
+  }
+}
+
+function safeRemoveStorage(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Ignore storage failures so the UI can continue rendering.
+  }
+}
+
 const state = {
   user: null,
-  token: localStorage.getItem(tokenStorageKey) || '',
+  token: safeGetStorage(tokenStorageKey),
   authMode: 'login',
   authLoading: false,
   authError: '',
@@ -174,7 +198,7 @@ async function apiFetch(path, options = {}) {
   if (response.status === 401) {
     state.user = null;
     state.token = '';
-    localStorage.removeItem(tokenStorageKey);
+    safeRemoveStorage(tokenStorageKey);
     render();
     throw new Error('unauthorized');
   }
@@ -482,7 +506,7 @@ function renderAuth() {
 
       state.user = data.user;
       state.token = data.token;
-      localStorage.setItem(tokenStorageKey, data.token);
+      safeSetStorage(tokenStorageKey, data.token);
       state.authLoading = false;
       ensureAutoRefresh();
       await loadNotificationPreferences();
@@ -846,7 +870,7 @@ function bindEvents() {
       state.assets = [];
       state.users = [];
       state.usersModalOpen = false;
-      stopAutoRefresh();
+      safeRemoveStorage(tokenStorageKey);
       localStorage.removeItem(tokenStorageKey);
       render();
     });
@@ -1162,7 +1186,7 @@ async function bootstrap() {
   } catch {
     state.user = null;
     state.token = '';
-    localStorage.removeItem(tokenStorageKey);
+    safeRemoveStorage(tokenStorageKey);
     stopAutoRefresh();
     renderAuth();
   }
@@ -1172,7 +1196,7 @@ bootstrap().catch(() => {
   state.user = null;
   state.token = '';
   state.authError = 'Falha ao carregar o painel. Tente novamente.';
-  localStorage.removeItem(tokenStorageKey);
+  safeRemoveStorage(tokenStorageKey);
   stopAutoRefresh();
   renderAuth();
 });
