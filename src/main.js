@@ -222,6 +222,7 @@ function renderAuth() {
   const isLogin = state.authMode === 'login';
   const isForgot = state.authMode === 'forgot';
   const isReset = state.authMode === 'reset';
+  const passwordRulesHint = 'A senha deve ter no mínimo 10 caracteres, com 1 maiúscula, 1 minúscula, 1 número e 1 símbolo.';
   const title = isLogin ? 'Entrar na plataforma' : 'Cadastrar novo usuário';
   const buttonLabel = isLogin ? 'Entrar' : 'Cadastrar e entrar';
   const toggleLabel = isLogin ? 'Não tenho conta' : 'Já tenho conta';
@@ -272,6 +273,7 @@ function renderAuth() {
         <span>Confirmar nova senha</span>
         <input name="confirmPassword" type="password" minlength="10" placeholder="Repita a senha" required />
       </label>
+      <p class="auth-hint">${passwordRulesHint}</p>
     `
     : '';
   const resendVerificationAction = isLogin
@@ -311,6 +313,7 @@ function renderAuth() {
               <span>Senha</span>
               <input name="password" type="password" minlength="10" placeholder="Mínimo 10 caracteres" required />
             </label>
+            ${!isLogin ? `<p class="auth-hint">${passwordRulesHint}</p>` : ''}
             ${forgotLinkAction}
             ${resendVerificationAction}
           ` : ''}
@@ -363,9 +366,7 @@ function renderAuth() {
 
         const data = await response.json();
         state.authError = '';
-        state.authNotice = data.verifyToken
-          ? `Link de confirmação gerado em desenvolvimento. Token: ${data.verifyToken}`
-          : (data.message || 'Se o e-mail existir, enviaremos uma nova confirmação.');
+        state.authNotice = data.message || 'Se o e-mail existir, enviaremos uma nova confirmação.';
         renderAuth();
       } catch {
         state.authError = 'Não foi possível reenviar o e-mail de confirmação.';
@@ -416,7 +417,7 @@ function renderAuth() {
           window.location.hash = `reset-password?token=${data.resetToken}`;
           state.authNotice = 'Token gerado em desenvolvimento. Use a tela de redefinição.';
         } else {
-          state.authNotice = 'Se o e-mail existir, você receberá um link de redefinição.';
+          state.authNotice = data.message || 'Se o e-mail existir, você receberá um link de redefinição.';
         }
 
         state.authLoading = false;
@@ -496,9 +497,7 @@ function renderAuth() {
       if (data.requiresEmailVerification) {
         state.authMode = 'login';
         state.authError = '';
-        state.authNotice = data.verifyToken
-          ? `Conta criada. Token de verificação (dev): ${data.verifyToken}`
-          : (data.message || 'Conta criada. Verifique seu e-mail para confirmar o cadastro.');
+        state.authNotice = data.message || 'Conta criada. Verifique seu e-mail para confirmar o cadastro.';
         state.authLoading = false;
         renderAuth();
         return;

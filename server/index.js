@@ -635,11 +635,17 @@ app.post('/api/auth/register', authLimiter, async (req, res, next) => {
     await ensureNotificationPreferences(createdUser.id);
     await sendVerificationEmail({ email, username, token: verifyToken });
 
+    const emailDeliveryEnabled = Boolean(mailer);
+    const message = emailDeliveryEnabled
+      ? 'Conta criada. Confira seu e-mail para confirmar o cadastro.'
+      : 'Conta criada, mas o envio de e-mail está desativado no servidor. Contate o administrador para configurar SMTP.';
+
     return res.status(201).json({
       ok: true,
       requiresEmailVerification: true,
-      message: 'Conta criada. Confira seu e-mail para confirmar o cadastro.',
-      verifyToken: mailer ? undefined : verifyToken,
+      emailDeliveryEnabled,
+      message,
+      verifyToken: !isProduction && !mailer ? verifyToken : undefined,
     });
   } catch (error) {
     next(error);
@@ -703,10 +709,16 @@ app.post('/api/auth/resend-verification', authLimiter, async (req, res, next) =>
 
     await sendVerificationEmail({ email: user.email, username: user.username, token: verifyToken });
 
+    const emailDeliveryEnabled = Boolean(mailer);
+    const message = emailDeliveryEnabled
+      ? 'Se o e-mail existir, enviaremos um novo link de confirmação.'
+      : 'Envio de e-mail desativado no servidor. Contate o administrador para configurar SMTP.';
+
     return res.status(200).json({
       ok: true,
-      message: 'Se o e-mail existir, enviaremos um novo link de confirmação.',
-      verifyToken: mailer ? undefined : verifyToken,
+      emailDeliveryEnabled,
+      message,
+      verifyToken: !isProduction && !mailer ? verifyToken : undefined,
     });
   } catch (error) {
     next(error);
@@ -749,8 +761,15 @@ app.post('/api/auth/forgot-password', authLimiter, async (req, res, next) => {
         `,
       });
 
-      if (!mailer) {
+      if (!mailer && !isProduction) {
         return res.status(200).json({ ok: true, message: 'Link gerado para desenvolvimento.', resetToken: token });
+      }
+
+      if (!mailer && isProduction) {
+        return res.status(200).json({
+          ok: true,
+          message: 'Envio de e-mail desativado no servidor. Contate o administrador para configurar SMTP.',
+        });
       }
     }
 

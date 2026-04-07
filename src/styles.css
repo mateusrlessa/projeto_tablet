@@ -132,6 +132,13 @@ a:focus-visible {
   color: #8bd3ff;
 }
 
+.auth-hint {
+  margin: -2px 0 4px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
 .auth-actions {
   display: grid;
   gap: 10px;
