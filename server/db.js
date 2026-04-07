@@ -6,10 +6,12 @@ dotenv.config();
 const { Pool } = pg;
 
 const connectionString = process.env.DATABASE_URL || 'postgres://hubsync:hubsync@localhost:5432/hubsync';
+const isRenderDatabase = String(connectionString).includes('render.com');
+const shouldUseSsl = process.env.PGSSL === 'true' || (process.env.NODE_ENV === 'production' && isRenderDatabase);
 
 export const pool = new Pool({
   connectionString,
-  ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : false,
+  ssl: shouldUseSsl ? { rejectUnauthorized: false } : false,
 });
 
 export async function query(text, params = []) {
