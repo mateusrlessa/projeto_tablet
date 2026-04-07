@@ -36,6 +36,23 @@ const state = {
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
 
+function renderBootState(message = 'Carregando...') {
+  app.innerHTML = `
+    <div class="auth-shell">
+      <div class="auth-card">
+        <div class="brand auth-brand">
+          <div class="brand-mark">⚡</div>
+          <div>
+            <h1>HubSync</h1>
+            <p>Painel de tablets TI</p>
+          </div>
+        </div>
+        <h2>${message}</h2>
+      </div>
+    </div>
+  `;
+}
+
 function statusLabel(status) {
   if (status === 'ok') return 'ONLINE / OK';
   if (status === 'atencao') return 'ATENÇÃO';
@@ -1064,6 +1081,7 @@ async function loadNotificationPreferences() {
 }
 
 async function bootstrap() {
+  renderBootState('Inicializando painel...');
   const resetToken = getResetTokenFromHash();
   const verifyToken = getVerifyTokenFromHash();
 
@@ -1098,6 +1116,8 @@ async function bootstrap() {
     return;
   }
 
+  renderBootState('Conectando ao servidor...');
+
   try {
     const response = await apiFetch('/api/auth/me');
     const data = await response.json();
@@ -1114,4 +1134,11 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+bootstrap().catch(() => {
+  state.user = null;
+  state.token = '';
+  state.authError = 'Falha ao carregar o painel. Tente novamente.';
+  localStorage.removeItem(tokenStorageKey);
+  stopAutoRefresh();
+  renderAuth();
+});
