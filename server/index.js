@@ -27,12 +27,13 @@ const allowedOrigins = String(process.env.CORS_ALLOWED_ORIGINS || frontendBaseUr
   .map((item) => item.trim())
   .filter(Boolean);
 const isAuthSecretWeak = !authSecret || authSecret === 'hubsync-dev-secret' || authSecret.length < 32;
-const smtpHost = process.env.SMTP_HOST || '';
-const smtpUser = process.env.SMTP_USER || '';
-const smtpPass = process.env.SMTP_PASS || '';
-const smtpPort = Number(process.env.SMTP_PORT || 587);
-const smtpSecure = process.env.SMTP_SECURE === 'true';
-const smtpFrom = process.env.SMTP_FROM || smtpUser || 'no-reply@hubsync.local';
+const smtpHost = process.env.SMTP_HOST || process.env.EMAIL_TRANSPORT_DEFAULT_HOST || '';
+const smtpUser = process.env.SMTP_USER || process.env.EMAIL_TRANSPORT_DEFAULT_USERNAME || '';
+const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_TRANSPORT_DEFAULT_PASSWORD || '';
+const smtpPort = Number(process.env.SMTP_PORT || process.env.EMAIL_TRANSPORT_DEFAULT_PORT || 587);
+const smtpSecureRaw = process.env.SMTP_SECURE || process.env.EMAIL_TRANSPORT_DEFAULT_TLS || 'false';
+const smtpSecure = String(smtpSecureRaw).toLowerCase() === 'true';
+const smtpFrom = process.env.SMTP_FROM || process.env.EMAIL_DEFAULT_FROM || smtpUser || 'no-reply@hubsync.local';
 
 let notificationScanRunning = false;
 

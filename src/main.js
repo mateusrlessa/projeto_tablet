@@ -241,6 +241,7 @@ function evaluatePasswordRules(password) {
 
 function renderAuth() {
   const isLogin = state.authMode === 'login';
+  const isRegister = state.authMode === 'register';
   const isForgot = state.authMode === 'forgot';
   const isReset = state.authMode === 'reset';
   const isVerify = state.authMode === 'verify';
@@ -248,14 +249,14 @@ function renderAuth() {
   const title = isLogin ? 'Entrar na plataforma' : 'Cadastrar novo usuário';
   const buttonLabel = isLogin ? 'Entrar' : 'Cadastrar e entrar';
   const toggleLabel = isLogin ? 'Não tenho conta' : 'Já tenho conta';
-  const usernameField = isLogin
-    ? ''
-    : `
+  const usernameField = isRegister
+    ? `
       <label>
         <span>Usuário</span>
         <input name="username" placeholder="Ex.: matheus" required />
       </label>
-    `;
+    `
+    : '';
   const authTitle = isForgot
     ? 'Recuperar senha'
     : isReset
