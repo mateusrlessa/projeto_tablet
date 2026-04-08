@@ -95,6 +95,7 @@ const schema = `
     reset_token_hash TEXT,
     reset_token_expires_at TIMESTAMPTZ,
     email_verify_token_hash TEXT,
+    email_verify_code_hash TEXT,
     email_verify_token_expires_at TIMESTAMPTZ,
     email_verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -159,6 +160,8 @@ const schema = `
   ALTER TABLE users
     ADD COLUMN IF NOT EXISTS email_verify_token_hash TEXT;
   ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email_verify_code_hash TEXT;
+  ALTER TABLE users
     ADD COLUMN IF NOT EXISTS email_verify_token_expires_at TIMESTAMPTZ;
   ALTER TABLE users
     ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
@@ -181,6 +184,10 @@ function hashSha256(value) {
 
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+function generateVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 function normalizeEmail(email) {
@@ -379,7 +386,7 @@ async function logAuditEvent({ actorUser, targetUserId, targetEmail, eventType, 
   );
 }
 
-async function sendVerificationEmail({ email, username, token }) {
+async function sendVerificationEmail({ email, username, token, code }) {
   const verifyUrl = `${frontendBaseUrl}/#verify-email?token=${token}`;
   const logoUrl = String(process.env.EMAIL_LOGO_URL || '').trim();
   const logoHtml = logoUrl
@@ -409,10 +416,10 @@ async function sendVerificationEmail({ email, username, token }) {
             <td style="padding:26px 24px 8px;">
               <h1 style="margin:0 0 10px;font-size:24px;line-height:1.2;color:#102045;">Confirme seu e-mail</h1>
               <p style="margin:0 0 14px;font-size:15px;line-height:1.7;color:#334155;">Olá, <strong>${username}</strong>. Falta apenas um passo para ativar sua conta na HubSync.</p>
-              <p style="margin:0 0 22px;font-size:15px;line-height:1.7;color:#334155;">Clique no botão abaixo para confirmar seu endereço de e-mail:</p>
-              <a href="${verifyUrl}" style="display:inline-block;padding:13px 22px;border-radius:12px;background:linear-gradient(135deg,#2f6bff,#1749d4);color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;">Confirmar e-mail</a>
+              <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#334155;">Digite o código abaixo na tela de confirmação:</p>
+              <div style="display:inline-block;padding:12px 18px;border-radius:12px;background:#0f172a;color:#ffffff;font-size:28px;font-weight:800;letter-spacing:6px;">${code}</div>
               <div style="margin-top:24px;padding:14px 16px;border-radius:12px;background:#f8fbff;border:1px solid #dbeafe;font-size:13px;color:#334155;line-height:1.6;">
-                Se o botão não funcionar, copie e cole este link no navegador:<br />
+                Se preferir, também é possível confirmar pelo link direto:<br />
                 <a href="${verifyUrl}" style="word-break:break-all;color:#1d4ed8;text-decoration:none;">${verifyUrl}</a>
               </div>
             </td>
@@ -656,20 +663,22 @@ app.post('/api/auth/register', authLimiter, async (req, res, next) => {
     if (exists.rowCount > 0) return res.status(409).json({ error: 'email-already-registered' });
 
     const verifyToken = generateToken();
+    const verifyCode = generateVerificationCode();
     const verifyTokenHash = hashSha256(verifyToken);
+    const verifyCodeHash = hashSha256(verifyCode);
     const verifyExpiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24);
 
     const passwordHash = hashPassword(password);
     const result = await query(
-      `INSERT INTO users (username, email, password_hash, role, email_verify_token_hash, email_verify_token_expires_at)
-       VALUES ($1, $2, $3, 'normal', $4, $5)
+      `INSERT INTO users (username, email, password_hash, role, email_verify_token_hash, email_verify_code_hash, email_verify_token_expires_at)
+       VALUES ($1, $2, $3, 'normal', $4, $5, $6)
        RETURNING *`,
-      [username, email, passwordHash, verifyTokenHash, verifyExpiresAt.toISOString()],
+      [username, email, passwordHash, verifyTokenHash, verifyCodeHash, verifyExpiresAt.toISOString()],
     );
 
     const createdUser = result.rows[0];
     await ensureNotificationPreferences(createdUser.id);
-    await sendVerificationEmail({ email, username, token: verifyToken });
+    await sendVerificationEmail({ email, username, token: verifyToken, code: verifyCode });
 
     const emailDeliveryEnabled = Boolean(mailer);
     const message = emailDeliveryEnabled
@@ -680,8 +689,10 @@ app.post('/api/auth/register', authLimiter, async (req, res, next) => {
       ok: true,
       requiresEmailVerification: true,
       emailDeliveryEnabled,
+      verifyEmail: email,
       message,
       verifyToken: !isProduction && !mailer ? verifyToken : undefined,
+      verifyCode: !isProduction && !mailer ? verifyCode : undefined,
     });
   } catch (error) {
     next(error);
@@ -698,6 +709,7 @@ app.get('/api/auth/verify-email', async (req, res, next) => {
       `UPDATE users
        SET email_verified_at = NOW(),
            email_verify_token_hash = NULL,
+           email_verify_code_hash = NULL,
            email_verify_token_expires_at = NULL
        WHERE email_verify_token_hash = $1
          AND email_verify_token_expires_at > NOW()
@@ -717,16 +729,50 @@ app.get('/api/auth/verify-email', async (req, res, next) => {
   }
 });
 
+app.post('/api/auth/verify-email-code', authLimiter, async (req, res, next) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const code = String(req.body.code || '').replace(/\D/g, '').slice(0, 6);
+
+    if (!isValidEmail(email)) return res.status(400).json({ error: 'email-invalid' });
+    if (code.length !== 6) return res.status(400).json({ error: 'verify-code-invalid' });
+
+    const codeHash = hashSha256(code);
+    const result = await query(
+      `UPDATE users
+       SET email_verified_at = NOW(),
+           email_verify_token_hash = NULL,
+           email_verify_code_hash = NULL,
+           email_verify_token_expires_at = NULL
+       WHERE email = $1
+         AND email_verify_code_hash = $2
+         AND email_verify_token_expires_at > NOW()
+       RETURNING *`,
+      [email, codeHash],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(400).json({ error: 'verify-code-invalid-or-expired' });
+    }
+
+    const user = result.rows[0];
+    await ensureNotificationPreferences(user.id);
+    return res.json({ ok: true, message: 'E-mail confirmado com sucesso.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/auth/resend-verification', authLimiter, async (req, res, next) => {
   try {
     const email = normalizeEmail(req.body.email);
     if (!isValidEmail(email)) {
-      return res.status(200).json({ ok: true, message: 'Se o e-mail existir, enviaremos um novo link de confirmação.' });
+      return res.status(200).json({ ok: true, message: 'Se o e-mail existir, enviaremos um novo código de confirmação.' });
     }
 
     const result = await query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rowCount === 0) {
-      return res.status(200).json({ ok: true, message: 'Se o e-mail existir, enviaremos um novo link de confirmação.' });
+      return res.status(200).json({ ok: true, message: 'Se o e-mail existir, enviaremos um novo código de confirmação.' });
     }
 
     const user = result.rows[0];
@@ -735,19 +781,21 @@ app.post('/api/auth/resend-verification', authLimiter, async (req, res, next) =>
     }
 
     const verifyToken = generateToken();
+    const verifyCode = generateVerificationCode();
     const verifyTokenHash = hashSha256(verifyToken);
+    const verifyCodeHash = hashSha256(verifyCode);
     const verifyExpiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24);
 
     await query(
-      'UPDATE users SET email_verify_token_hash = $1, email_verify_token_expires_at = $2 WHERE id = $3',
-      [verifyTokenHash, verifyExpiresAt.toISOString(), user.id],
+      'UPDATE users SET email_verify_token_hash = $1, email_verify_code_hash = $2, email_verify_token_expires_at = $3 WHERE id = $4',
+      [verifyTokenHash, verifyCodeHash, verifyExpiresAt.toISOString(), user.id],
     );
 
-    await sendVerificationEmail({ email: user.email, username: user.username, token: verifyToken });
+    await sendVerificationEmail({ email: user.email, username: user.username, token: verifyToken, code: verifyCode });
 
     const emailDeliveryEnabled = Boolean(mailer);
     const message = emailDeliveryEnabled
-      ? 'Se o e-mail existir, enviaremos um novo link de confirmação.'
+      ? 'Se o e-mail existir, enviaremos um novo código de confirmação.'
       : 'Envio de e-mail desativado no servidor. Contate o administrador para configurar SMTP.';
 
     return res.status(200).json({
@@ -755,6 +803,7 @@ app.post('/api/auth/resend-verification', authLimiter, async (req, res, next) =>
       emailDeliveryEnabled,
       message,
       verifyToken: !isProduction && !mailer ? verifyToken : undefined,
+      verifyCode: !isProduction && !mailer ? verifyCode : undefined,
     });
   } catch (error) {
     next(error);
