@@ -70,6 +70,7 @@ const state = {
   authError: '',
   authNotice: '',
   resetToken: '',
+  verifyEmail: '',
   verifyToken: '',
   users: [],
   usersLoading: false,
@@ -242,6 +243,7 @@ function renderAuth() {
   const isLogin = state.authMode === 'login';
   const isForgot = state.authMode === 'forgot';
   const isReset = state.authMode === 'reset';
+  const isVerify = state.authMode === 'verify';
   const passwordRulesHint = 'A senha deve ter no mínimo 10 caracteres, com 1 maiúscula, 1 minúscula, 1 número e 1 símbolo.';
   const title = isLogin ? 'Entrar na plataforma' : 'Cadastrar novo usuário';
   const buttonLabel = isLogin ? 'Entrar' : 'Cadastrar e entrar';
@@ -258,11 +260,15 @@ function renderAuth() {
     ? 'Recuperar senha'
     : isReset
       ? 'Redefinir senha'
+      : isVerify
+        ? 'Confirmar e-mail'
       : title;
   const authButtonLabel = isForgot
     ? 'Enviar link de recuperação'
     : isReset
       ? 'Redefinir senha'
+      : isVerify
+        ? 'Confirmar código'
       : buttonLabel;
   const forgotLinkAction = isLogin
     ? `
@@ -309,10 +315,19 @@ function renderAuth() {
       <p class="auth-hint">${passwordRulesHint}</p>
     `
     : '';
-  const resendVerificationAction = isLogin
+  const verifyFields = isVerify
     ? `
+      <p class="auth-hint">Enviamos um código de 6 dígitos para o e-mail informado. Digite o código abaixo para concluir o cadastro.</p>
+      <label>
+        <span>E-mail</span>
+        <input name="verifyEmail" type="email" value="${state.verifyEmail}" placeholder="voce@dominio.com" required />
+      </label>
+      <label>
+        <span>Código de confirmação</span>
+        <input name="verifyCode" inputmode="numeric" maxlength="6" placeholder="000000" required />
+      </label>
       <div class="auth-link-row">
-        <button id="resendVerification" class="auth-link-button" type="button">Reenviar confirmação de e-mail</button>
+        <button id="resendVerificationCode" class="auth-link-button" type="button">Reenviar código</button>
       </div>
     `
     : '';
@@ -337,7 +352,8 @@ function renderAuth() {
           ${usernameField}
           ${forgotField}
           ${resetFields}
-          ${!isForgot && !isReset ? `
+          ${verifyFields}
+          ${!isForgot && !isReset && !isVerify ? `
             <label>
               <span>E-mail</span>
               <input name="email" type="email" placeholder="voce@dominio.com" required />
@@ -360,14 +376,13 @@ function renderAuth() {
               <p class="auth-hint">${passwordRulesHint}</p>
             ` : ''}
             ${forgotLinkAction}
-            ${resendVerificationAction}
           ` : ''}
           <button class="primary-button" type="submit" ${state.authLoading ? 'disabled' : ''}>${authButtonLabel}</button>
         </form>
 
         <div class="auth-actions">
-          ${!isForgot && !isReset ? `<button id="toggleAuthMode" class="ghost-button auth-toggle" type="button">${toggleLabel}</button>` : ''}
-          ${(isForgot || isReset) ? '<button id="backToLogin" class="ghost-button auth-toggle" type="button">Voltar</button>' : ''}
+          ${!isForgot && !isReset && !isVerify ? `<button id="toggleAuthMode" class="ghost-button auth-toggle" type="button">${toggleLabel}</button>` : ''}
+          ${(isForgot || isReset || isVerify) ? '<button id="backToLogin" class="ghost-button auth-toggle" type="button">Voltar</button>' : ''}
         </div>
       </div>
     </div>
@@ -376,7 +391,7 @@ function renderAuth() {
   const form = document.querySelector('#authForm');
   const toggle = document.querySelector('#toggleAuthMode');
   const forgotPassword = document.querySelector('#forgotPassword');
-  const resendVerification = document.querySelector('#resendVerification');
+  const resendVerificationCode = document.querySelector('#resendVerificationCode');
   const backToLogin = document.querySelector('#backToLogin');
 
   const passwordToggleButtons = document.querySelectorAll('[data-password-toggle]');
@@ -430,24 +445,28 @@ function renderAuth() {
     });
   }
 
-  if (resendVerification) {
-    resendVerification.addEventListener('click', async () => {
-      const email = window.prompt('Informe seu e-mail para reenviar a confirmação:') || '';
-      if (!email.trim()) return;
+  if (resendVerificationCode) {
+    resendVerificationCode.addEventListener('click', async () => {
+      const email = String(state.verifyEmail || '').trim();
+      if (!email) {
+        state.authError = 'Informe o e-mail para reenviar o código.';
+        renderAuth();
+        return;
+      }
 
       try {
         const response = await fetch(`${apiBaseUrl}/api/auth/resend-verification`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email.trim() }),
+          body: JSON.stringify({ email }),
         });
 
         const data = await response.json();
         state.authError = '';
-        state.authNotice = data.message || 'Se o e-mail existir, enviaremos uma nova confirmação.';
+        state.authNotice = data.message || 'Se o e-mail existir, enviaremos um novo código de confirmação.';
         renderAuth();
       } catch {
-        state.authError = 'Não foi possível reenviar o e-mail de confirmação.';
+        state.authError = 'Não foi possível reenviar o código de confirmação.';
         renderAuth();
       }
     });
@@ -459,6 +478,7 @@ function renderAuth() {
       state.authError = '';
       state.authNotice = '';
       state.resetToken = '';
+      state.verifyEmail = '';
       window.location.hash = '';
       renderAuth();
     });
@@ -542,6 +562,37 @@ function renderAuth() {
         return;
       }
 
+      if (isVerify) {
+        const verifyEmail = String(formData.get('verifyEmail') || '').trim().toLowerCase();
+        const verifyCode = String(formData.get('verifyCode') || '').replace(/\D/g, '').slice(0, 6);
+
+        state.verifyEmail = verifyEmail;
+
+        const response = await fetch(`${apiBaseUrl}/api/auth/verify-email-code`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: verifyEmail, code: verifyCode }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          state.authError = data.error === 'verify-code-invalid-or-expired'
+            ? 'Código inválido ou expirado. Solicite um novo código.'
+            : 'Não foi possível confirmar o e-mail com o código informado.';
+          state.authLoading = false;
+          renderAuth();
+          return;
+        }
+
+        state.authMode = 'login';
+        state.verifyEmail = '';
+        state.authError = '';
+        state.authNotice = data.message || 'E-mail confirmado com sucesso. Faça login.';
+        state.authLoading = false;
+        renderAuth();
+        return;
+      }
+
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
       const payload = {
         email: String(formData.get('email') || '').trim(),
@@ -561,7 +612,10 @@ function renderAuth() {
       const data = await response.json();
       if (!response.ok) {
         if (data.error === 'email-not-verified') {
-          state.authError = 'Seu e-mail ainda não foi confirmado. Verifique sua caixa de entrada.';
+          state.authMode = 'verify';
+          state.verifyEmail = String(formData.get('email') || '').trim().toLowerCase();
+          state.authError = '';
+          state.authNotice = 'Seu e-mail ainda não foi confirmado. Digite o código recebido para concluir o acesso.';
         } else if (String(data.error || '').startsWith('password-')) {
           state.authError = passwordRuleMessage(data.error);
         } else {
@@ -573,9 +627,10 @@ function renderAuth() {
       }
 
       if (data.requiresEmailVerification) {
-        state.authMode = 'login';
+        state.authMode = 'verify';
+        state.verifyEmail = data.verifyEmail || String(formData.get('email') || '').trim().toLowerCase();
         state.authError = '';
-        state.authNotice = data.message || 'Conta criada. Verifique seu e-mail para confirmar o cadastro.';
+        state.authNotice = data.message || 'Conta criada. Digite o código recebido no seu e-mail para confirmar o cadastro.';
         state.authLoading = false;
         renderAuth();
         return;
