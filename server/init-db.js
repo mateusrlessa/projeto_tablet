@@ -11,6 +11,7 @@ const schema = `
     reset_token_hash TEXT,
     reset_token_expires_at TIMESTAMPTZ,
     email_verify_token_hash TEXT,
+    email_verify_code_hash TEXT,
     email_verify_token_expires_at TIMESTAMPTZ,
     email_verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -75,6 +76,8 @@ const schema = `
   ALTER TABLE users
     ADD COLUMN IF NOT EXISTS email_verify_token_hash TEXT;
   ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email_verify_code_hash TEXT;
+  ALTER TABLE users
     ADD COLUMN IF NOT EXISTS email_verify_token_expires_at TIMESTAMPTZ;
   ALTER TABLE users
     ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
@@ -102,6 +105,7 @@ const userSeedVerificationSql = `
   UPDATE users
   SET email_verified_at = COALESCE(email_verified_at, NOW()),
       email_verify_token_hash = NULL,
+      email_verify_code_hash = NULL,
       email_verify_token_expires_at = NULL
   WHERE email = $1;
 `;
