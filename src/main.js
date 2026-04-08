@@ -228,6 +228,28 @@ function passwordRuleMessage(code) {
   return messages[code] || 'A senha não atende aos requisitos de segurança.';
 }
 
+function authErrorMessage(errorCode, isRegister) {
+  const messages = {
+    'username-required': 'Informe o nome de usuário.',
+    'email-invalid': 'Informe um e-mail válido.',
+    'email-already-registered': 'Esse e-mail já está cadastrado.',
+    'invalid-credentials': 'E-mail ou senha inválidos.',
+    'email-not-verified': 'Seu e-mail ainda não foi confirmado. Digite o código recebido para concluir o acesso.',
+  };
+
+  if (String(errorCode || '').startsWith('password-')) {
+    return passwordRuleMessage(errorCode);
+  }
+
+  if (messages[errorCode]) {
+    return messages[errorCode];
+  }
+
+  return isRegister
+    ? 'Não foi possível criar a conta. Verifique os dados e tente novamente.'
+    : 'Não foi possível autenticar. Verifique os dados e tente novamente.';
+}
+
 function evaluatePasswordRules(password) {
   const value = String(password || '');
   return {
@@ -617,10 +639,8 @@ function renderAuth() {
           state.verifyEmail = String(formData.get('email') || '').trim().toLowerCase();
           state.authError = '';
           state.authNotice = 'Seu e-mail ainda não foi confirmado. Digite o código recebido para concluir o acesso.';
-        } else if (String(data.error || '').startsWith('password-')) {
-          state.authError = passwordRuleMessage(data.error);
         } else {
-          state.authError = 'Não foi possível autenticar. Verifique os dados e tente novamente.';
+          state.authError = authErrorMessage(data.error, !isLogin);
         }
         state.authLoading = false;
         renderAuth();
