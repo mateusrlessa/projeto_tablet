@@ -34,8 +34,11 @@ const smtpPort = Number(process.env.SMTP_PORT || process.env.EMAIL_TRANSPORT_DEF
 const smtpSecureRaw = process.env.SMTP_SECURE || process.env.EMAIL_TRANSPORT_DEFAULT_TLS || 'false';
 const smtpSecure = String(smtpSecureRaw).toLowerCase() === 'true';
 const smtpFrom = process.env.SMTP_FROM || process.env.EMAIL_DEFAULT_FROM || smtpUser || 'no-reply@hubsync.local';
+const appTimeZone = process.env.APP_TIMEZONE || 'America/Sao_Paulo';
 
 let notificationScanRunning = false;
+let smtpLastError = '';
+let smtpVerified = false;
 
 const mailer = smtpHost && smtpUser && smtpPass
   ? nodemailer.createTransport({
@@ -48,6 +51,25 @@ const mailer = smtpHost && smtpUser && smtpPass
       },
     })
   : null;
+
+async function verifyMailerConnection() {
+  if (!mailer) {
+    smtpVerified = false;
+    smtpLastError = 'smtp-not-configured';
+    return false;
+  }
+
+  try {
+    await mailer.verify();
+    smtpVerified = true;
+    smtpLastError = '';
+    return true;
+  } catch (error) {
+    smtpVerified = false;
+    smtpLastError = String(error?.message || 'smtp-verify-failed');
+    return false;
+  }
+}
 
 app.set('trust proxy', 1);
 
@@ -220,18 +242,38 @@ function extractRequestIp(req) {
   return forwardedFor || req.ip || null;
 }
 
+function formatDateTimeForUser(date) {
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: appTimeZone,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
+}
+
 async function sendMail({ to, subject, html }) {
   if (!mailer) {
     console.log('[mail-disabled]', { to, subject });
     return false;
   }
 
-  await mailer.sendMail({
-    from: smtpFrom,
-    to,
-    subject,
-    html,
-  });
+  try {
+    await mailer.sendMail({
+      from: smtpFrom,
+      to,
+      subject,
+      html,
+    });
+    smtpVerified = true;
+    smtpLastError = '';
+  } catch (error) {
+    smtpVerified = false;
+    smtpLastError = String(error?.message || 'smtp-send-failed');
+    throw error;
+  }
 
   return true;
 }
@@ -303,6 +345,15 @@ function publicRole(role) {
 
 function normalizePhone(value) {
   return String(value || '').replace(/\D/g, '');
+}
+
+function parseSyncDateInput(value) {
+  const raw = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+
+  const parsed = new Date(`${raw}T12:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
 }
 
 function formatBrazilPhone(value) {
@@ -397,26 +448,37 @@ function buildHubLocalEmailHtml({
   noteHtml,
 }) {
   const logoUrl = String(process.env.EMAIL_LOGO_URL || '').trim();
+  const currentYear = new Date().getFullYear();
   const logoBlock = logoUrl
     ? `<img src="${logoUrl}" alt="HubLocal" style="display:block;max-width:170px;height:auto;border:0;" />`
     : `<div style="font-size:34px;font-weight:800;letter-spacing:0.3px;color:#ffffff;">HubLocal</div>`;
 
-  const socialButtons = [
-    { label: 'TikTok', url: 'https://www.tiktok.com/@hublocal' },
-    { label: 'YouTube', url: 'https://www.youtube.com/channel/UC_r-VTrVBOgEDMjvJ94o8-A/featured' },
-    { label: 'Instagram', url: 'https://www.instagram.com/hublocalbr/' },
-  ]
-    .map(
-      (item) => `
-        <a href="${item.url}" style="display:inline-block;padding:8px 12px;border:1px solid rgba(255,255,255,0.22);border-radius:10px;color:#ffffff;text-decoration:none;font-size:12px;font-weight:700;letter-spacing:0.2px;">${item.label}</a>
-      `,
-    )
-    .join('');
+  const socialIcons = `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="margin-left:auto;border-collapse:separate;">
+      <tr>
+        <td width="42" height="42" style="width:42px;height:42px;padding-left:8px;vertical-align:middle;">
+          <a href="https://www.tiktok.com/@hublocal" target="_blank" rel="noreferrer" aria-label="TikTok" title="TikTok" style="display:block;width:38px;height:38px;line-height:38px;text-align:center;border-radius:999px;border:1px solid rgba(255,255,255,0.26);background:#111111;text-decoration:none;">
+            <img src="https://cdn.simpleicons.org/tiktok/ffffff" alt="TikTok" width="16" height="16" style="display:block;margin:11px auto 0;border:0;" />
+          </a>
+        </td>
+        <td width="42" height="42" style="width:42px;height:42px;padding-left:8px;vertical-align:middle;">
+          <a href="https://www.youtube.com/channel/UC_r-VTrVBOgEDMjvJ94o8-A/featured" target="_blank" rel="noreferrer" aria-label="YouTube" title="YouTube" style="display:block;width:38px;height:38px;line-height:38px;text-align:center;border-radius:999px;border:1px solid rgba(255,255,255,0.26);background:#FF0000;text-decoration:none;">
+            <img src="https://cdn.simpleicons.org/youtube/ffffff" alt="YouTube" width="16" height="16" style="display:block;margin:11px auto 0;border:0;" />
+          </a>
+        </td>
+        <td width="42" height="42" style="width:42px;height:42px;padding-left:8px;vertical-align:middle;">
+          <a href="https://www.instagram.com/hublocalbr/" target="_blank" rel="noreferrer" aria-label="Instagram" title="Instagram" style="display:block;width:38px;height:38px;line-height:38px;text-align:center;border-radius:999px;border:1px solid rgba(255,255,255,0.26);background:linear-gradient(135deg,#F58529,#DD2A7B,#8134AF,#515BD4);text-decoration:none;">
+            <img src="https://cdn.simpleicons.org/instagram/ffffff" alt="Instagram" width="16" height="16" style="display:block;margin:11px auto 0;border:0;" />
+          </a>
+        </td>
+      </tr>
+    </table>
+  `;
 
   const ctaHtml = ctaLabel && ctaUrl
     ? `
       <p style="margin:24px 0 16px;">
-        <a href="${ctaUrl}" style="display:inline-block;padding:13px 22px;border-radius:12px;background:linear-gradient(135deg,#3a79ff,#1d4fe0);color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;">${ctaLabel}</a>
+        <a href="${ctaUrl}" style="display:inline-block;padding:13px 22px;border-radius:12px;background:linear-gradient(135deg,#3a79ff,#1d4fe0);color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:0.2px;box-shadow:0 8px 20px rgba(32,88,226,0.35);">${ctaLabel}</a>
       </p>
       <div style="padding:14px 16px;border-radius:12px;background:#f8fbff;border:1px solid #dbeafe;font-size:13px;color:#334155;line-height:1.65;">
         Se o botão não funcionar, copie e cole este link no navegador:<br />
@@ -426,21 +488,22 @@ function buildHubLocalEmailHtml({
     : '';
 
   return `
-    <div style="margin:0;padding:24px 12px;background:#020027;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #dde7ff;">
+    <div style="margin:0;padding:28px 12px;background:#040035;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;">
+      <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;visibility:hidden;">${title} • HubLocal</div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:20px;overflow:hidden;border:1px solid #dde7ff;box-shadow:0 20px 50px rgba(0,0,0,0.35);">
         <tr>
-          <td style="padding:26px 24px;background:linear-gradient(180deg,#03002b 0%,#0a1750 100%);color:#ffffff;">
+          <td style="padding:24px;background:linear-gradient(135deg,#060247 0%,#0f1f66 100%);color:#ffffff;">
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="vertical-align:middle;">${logoBlock}</td>
-                <td style="vertical-align:middle;text-align:right;white-space:nowrap;">${socialButtons}</td>
+                <td style="vertical-align:middle;text-align:right;white-space:nowrap;line-height:0;">${socialIcons}</td>
               </tr>
             </table>
           </td>
         </tr>
 
         <tr>
-          <td style="padding:28px 24px 10px;">
+          <td style="padding:30px 24px 10px;">
             <h1 style="margin:0 0 8px;font-size:26px;line-height:1.2;color:#0f1f4d;">${title}</h1>
             <p style="margin:0 0 16px;color:#475569;font-size:14px;">${subtitle}</p>
             <p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:#334155;">${greeting}</p>
@@ -454,9 +517,10 @@ function buildHubLocalEmailHtml({
         </tr>
 
         <tr>
-          <td style="padding:16px 24px;background:#03002b;border-top:1px solid rgba(255,255,255,0.14);text-align:center;color:#d6dcff;font-size:12px;line-height:1.7;">
-            HubLocal • Mensagem automatica de seguranca<br />
-            Se voce nao reconhece esta acao, ignore este e-mail.
+          <td style="padding:16px 24px;background:#060247;border-top:1px solid rgba(255,255,255,0.14);text-align:center;color:#d6dcff;font-size:12px;line-height:1.7;">
+            HubLocal • Mensagem automática de segurança<br />
+            Se você não reconhece esta ação, ignore este e-mail.<br />
+            © ${currentYear} HubLocal
           </td>
         </tr>
       </table>
@@ -472,17 +536,17 @@ async function sendVerificationEmail({ email, username, token, code }) {
     subject: 'HubLocal: confirme seu e-mail',
     html: buildHubLocalEmailHtml({
       title: 'Confirme seu e-mail',
-      subtitle: 'Validacao de acesso ao painel HubSync',
-      greeting: `Ola, <strong>${username}</strong>. Falta apenas um passo para ativar sua conta.`,
+      subtitle: 'Validação de acesso ao painel HubSync',
+      greeting: `Olá, <strong>${username}</strong>. Falta apenas um passo para ativar sua conta.`,
       contentHtml: `
-        <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#334155;">Digite o codigo abaixo na tela de confirmacao:</p>
+        <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#334155;">Digite o código abaixo na tela de confirmação:</p>
         <div style="display:inline-block;padding:12px 18px;border-radius:12px;background:#03002b;color:#ffffff;font-size:30px;font-weight:800;letter-spacing:6px;">${code}</div>
       `,
       ctaLabel: 'Confirmar por link',
       ctaUrl: verifyUrl,
       noteHtml: `
         <div style="padding:12px 14px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#7c2d12;font-size:13px;line-height:1.6;">
-          Este codigo e link expiram em 24 horas.
+          Este código e link expiram em 24 horas.
         </div>
       `,
     }),
@@ -724,18 +788,31 @@ app.post('/api/auth/register', authLimiter, async (req, res, next) => {
 
     const createdUser = result.rows[0];
     await ensureNotificationPreferences(createdUser.id);
-    await sendVerificationEmail({ email, username, token: verifyToken, code: verifyCode });
 
-    const emailDeliveryEnabled = Boolean(mailer);
+    let emailDeliveryEnabled = Boolean(mailer);
+    let emailSendFailed = false;
+    if (mailer) {
+      try {
+        await sendVerificationEmail({ email, username, token: verifyToken, code: verifyCode });
+      } catch (error) {
+        emailDeliveryEnabled = false;
+        emailSendFailed = true;
+        console.error('[mail-send-error][register]', error?.message || error);
+      }
+    }
+
     const message = emailDeliveryEnabled
       ? 'Conta criada. Confira seu e-mail para confirmar o cadastro.'
-      : 'Conta criada, mas o envio de e-mail está desativado no servidor. Contate o administrador para configurar SMTP.';
+      : emailSendFailed
+        ? 'Conta criada, mas houve falha ao enviar o e-mail de confirmação. Tente reenviar o código.'
+        : 'Conta criada, mas o envio de e-mail está desativado no servidor. Contate o administrador para configurar SMTP.';
 
     return res.status(201).json({
       ok: true,
       requiresEmailVerification: true,
       emailDeliveryEnabled,
       verifyEmail: email,
+      emailSendFailed,
       message,
       verifyToken: !isProduction && !mailer ? verifyToken : undefined,
       verifyCode: !isProduction && !mailer ? verifyCode : undefined,
@@ -837,16 +914,28 @@ app.post('/api/auth/resend-verification', authLimiter, async (req, res, next) =>
       [verifyTokenHash, verifyCodeHash, verifyExpiresAt.toISOString(), user.id],
     );
 
-    await sendVerificationEmail({ email: user.email, username: user.username, token: verifyToken, code: verifyCode });
+    let emailDeliveryEnabled = Boolean(mailer);
+    let emailSendFailed = false;
+    if (mailer) {
+      try {
+        await sendVerificationEmail({ email: user.email, username: user.username, token: verifyToken, code: verifyCode });
+      } catch (error) {
+        emailDeliveryEnabled = false;
+        emailSendFailed = true;
+        console.error('[mail-send-error][resend-verification]', error?.message || error);
+      }
+    }
 
-    const emailDeliveryEnabled = Boolean(mailer);
     const message = emailDeliveryEnabled
       ? 'Se o e-mail existir, enviaremos um novo código de confirmação.'
-      : 'Envio de e-mail desativado no servidor. Contate o administrador para configurar SMTP.';
+      : emailSendFailed
+        ? 'Nao foi possivel enviar o codigo agora. Tente novamente em instantes.'
+        : 'Envio de e-mail desativado no servidor. Contate o administrador para configurar SMTP.';
 
     return res.status(200).json({
       ok: true,
       emailDeliveryEnabled,
+      emailSendFailed,
       message,
       verifyToken: !isProduction && !mailer ? verifyToken : undefined,
       verifyCode: !isProduction && !mailer ? verifyCode : undefined,
@@ -877,13 +966,13 @@ app.post('/api/auth/forgot-password', authLimiter, async (req, res, next) => {
       const resetUrl = `${frontendBaseUrl}/#reset-password?token=${token}`;
       await sendMail({
         to: email,
-        subject: 'HubLocal: redefinicao de senha',
+        subject: 'HubLocal: redefinição de senha',
         html: buildHubLocalEmailHtml({
-          title: 'Redefinicao de senha',
-          subtitle: 'Solicitacao de seguranca da sua conta',
-          greeting: 'Recebemos uma solicitacao para redefinir sua senha no HubSync.',
+          title: 'Redefinição de senha',
+          subtitle: 'Solicitação de segurança da sua conta',
+          greeting: 'Recebemos uma solicitação para redefinir sua senha no HubSync.',
           contentHtml: `
-            <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#334155;">Para continuar, clique no botao abaixo e crie uma nova senha segura.</p>
+            <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#334155;">Para continuar, clique no botão abaixo e crie uma nova senha segura.</p>
           `,
           ctaLabel: 'Criar nova senha',
           ctaUrl: resetUrl,
@@ -1019,18 +1108,48 @@ app.put('/api/notifications/preferences', requireAuth, async (req, res, next) =>
   }
 });
 
-app.get('/api/users', requireAuth, requireAdmin, async (_req, res, next) => {
+app.get('/api/users', requireAuth, requireAdmin, async (req, res, next) => {
   try {
-    const result = await query('SELECT id, username, email, role, created_at, email_verified_at FROM users ORDER BY id ASC');
-    res.json(result.rows.map((row) => ({
-      id: row.id,
-      username: row.username,
-      email: row.email,
-      role: publicRole(row.role),
-      createdAt: row.created_at,
-      emailVerifiedAt: row.email_verified_at,
-      emailVerified: Boolean(row.email_verified_at),
-    })));
+    const q = String(req.query.q || '').trim();
+    const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 100);
+    const offset = Math.max(Number(req.query.offset || 0), 0);
+
+    const params = [];
+    let whereClause = '';
+    if (q) {
+      params.push(`%${q}%`);
+      whereClause = `WHERE username ILIKE $1 OR email ILIKE $1`;
+    }
+
+    const countResult = await query(
+      `SELECT COUNT(*) as count FROM users ${whereClause}`,
+      params,
+    );
+
+    const limitParam = q ? 2 : 1;
+    const result = await query(
+      `SELECT id, username, email, role, created_at, email_verified_at
+       FROM users
+       ${whereClause}
+       ORDER BY id ASC
+       LIMIT $${limitParam} OFFSET $${limitParam + 1}`,
+      [...params, limit, offset],
+    );
+
+    res.json({
+      items: result.rows.map((row) => ({
+        id: row.id,
+        username: row.username,
+        email: row.email,
+        role: publicRole(row.role),
+        createdAt: row.created_at,
+        emailVerifiedAt: row.email_verified_at,
+        emailVerified: Boolean(row.email_verified_at),
+      })),
+      total: parseInt(countResult.rows[0].count, 10),
+      limit,
+      offset,
+    });
   } catch (error) {
     next(error);
   }
@@ -1061,6 +1180,18 @@ app.post('/api/users', requireAuth, requireAdmin, async (req, res, next) => {
     await ensureNotificationPreferences(result.rows[0].id);
 
     const row = result.rows[0];
+    await logAuditEvent({
+      actorUser: req.user,
+      targetUserId: row.id,
+      targetEmail: row.email,
+      eventType: 'user.created',
+      payload: {
+        targetUsername: row.username,
+        targetRole: row.role,
+      },
+      req,
+    });
+
     res.status(201).json({
       id: row.id,
       username: row.username,
@@ -1103,6 +1234,19 @@ app.put('/api/users/:id/role', requireAuth, requireAdmin, async (req, res, next)
     );
 
     const row = result.rows[0];
+    await logAuditEvent({
+      actorUser: req.user,
+      targetUserId: row.id,
+      targetEmail: row.email,
+      eventType: 'user.role.updated',
+      payload: {
+        targetUsername: row.username,
+        oldRole: publicRole(currentResult.rows[0].role),
+        newRole: publicRole(row.role),
+      },
+      req,
+    });
+
     res.json({
       id: row.id,
       username: row.username,
@@ -1251,6 +1395,16 @@ app.post('/api/assets/:id/send-renewal-email', requireAuth, requireAdmin, async 
     }
 
     await sendRenewalEmail(asset, recipientEmail);
+    await logAuditEvent({
+      actorUser: req.user,
+      eventType: 'asset.renewal.email.sent',
+      payload: {
+        assetId: asset.id,
+        assetName: asset.name,
+        recipientEmail,
+      },
+      req,
+    });
     return res.json({ ok: true, recipientEmail });
   } catch (error) {
     next(error);
@@ -1266,6 +1420,7 @@ app.post('/api/assets', requireAuth, async (req, res, next) => {
     const name = String(req.body.name || '').trim();
     const personNumber = String(req.body.personNumber || '').trim();
     const renewalEmail = normalizeEmail(req.body.renewalEmail);
+    const lastSyncDate = String(req.body.lastSyncDate || '').trim();
     const renewalPeriodDays = 15;
 
     if (!name) {
@@ -1282,17 +1437,35 @@ app.post('/api/assets', requireAuth, async (req, res, next) => {
     }
 
     const now = new Date();
-    const dueDate = new Date(now);
+    const syncDate = parseSyncDateInput(lastSyncDate);
+    if (!syncDate) {
+      return res.status(400).json({ error: 'last-sync-date-invalid' });
+    }
+
+    if (syncDate.getTime() > now.getTime()) {
+      return res.status(400).json({ error: 'last-sync-date-in-future' });
+    }
+
+    const dueDate = new Date(syncDate);
     dueDate.setDate(dueDate.getDate() + renewalPeriodDays);
 
     const result = await query(
       `INSERT INTO assets (name, person_number, renewal_email, last_sync_at, renewal_due_at, renewal_period_days)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [name, formatBrazilPhone(digits), renewalEmail || null, now.toISOString(), dueDate.toISOString(), renewalPeriodDays],
+      [name, formatBrazilPhone(digits), renewalEmail || null, syncDate.toISOString(), dueDate.toISOString(), renewalPeriodDays],
     );
 
     const asset = mapAsset(result.rows[0]);
+    await logAuditEvent({
+      actorUser: req.user,
+      eventType: 'asset.created',
+      payload: {
+        assetId: asset.id,
+        assetName: asset.name,
+      },
+      req,
+    });
     await notifyUsersOnNewAsset(asset);
     res.status(201).json(asset);
   } catch (error) {
@@ -1326,6 +1499,16 @@ app.post('/api/assets/:id/renew', requireAuth, async (req, res, next) => {
       [now.toISOString(), dueDate.toISOString(), id],
     );
 
+    await logAuditEvent({
+      actorUser: req.user,
+      eventType: 'asset.renewed',
+      payload: {
+        assetId: id,
+        assetName: current.name,
+      },
+      req,
+    });
+
     res.json(mapAsset(result.rows[0]));
   } catch (error) {
     next(error);
@@ -1342,6 +1525,7 @@ app.put('/api/assets/:id', requireAuth, async (req, res, next) => {
     const name = String(req.body.name || '').trim();
     const personNumber = String(req.body.personNumber || '').trim();
     const renewalEmail = normalizeEmail(req.body.renewalEmail);
+    const lastSyncDate = String(req.body.lastSyncDate || '').trim();
     const renewalPeriodDays = Number(req.body.renewalPeriodDays);
 
     if (!name) {
@@ -1367,17 +1551,36 @@ app.put('/api/assets/:id', requireAuth, async (req, res, next) => {
     }
 
     const current = currentResult.rows[0];
-    const lastSyncAt = new Date(current.last_sync_at);
-    const dueDate = new Date(lastSyncAt);
+    const parsedSyncDate = lastSyncDate ? parseSyncDateInput(lastSyncDate) : new Date(current.last_sync_at);
+    if (!parsedSyncDate || Number.isNaN(parsedSyncDate.getTime())) {
+      return res.status(400).json({ error: 'last-sync-date-invalid' });
+    }
+
+    if (parsedSyncDate.getTime() > Date.now()) {
+      return res.status(400).json({ error: 'last-sync-date-in-future' });
+    }
+
+    const dueDate = new Date(parsedSyncDate);
     dueDate.setDate(dueDate.getDate() + renewalPeriodDays);
 
     const result = await query(
       `UPDATE assets
-       SET name = $1, person_number = $2, renewal_email = $3, renewal_period_days = $4, renewal_due_at = $5, updated_at = NOW()
-       WHERE id = $6
+       SET name = $1, person_number = $2, renewal_email = $3, renewal_period_days = $4, last_sync_at = $5, renewal_due_at = $6, updated_at = NOW()
+       WHERE id = $7
        RETURNING *`,
-      [name, formatBrazilPhone(digits), renewalEmail || null, renewalPeriodDays, dueDate.toISOString(), id],
+      [name, formatBrazilPhone(digits), renewalEmail || null, renewalPeriodDays, parsedSyncDate.toISOString(), dueDate.toISOString(), id],
     );
+
+    await logAuditEvent({
+      actorUser: req.user,
+      eventType: 'asset.updated',
+      payload: {
+        assetId: id,
+        oldName: current.name,
+        newName: name,
+      },
+      req,
+    });
 
     res.json(mapAsset(result.rows[0]));
   } catch (error) {
@@ -1409,6 +1612,16 @@ app.post('/api/assets/resolve-overdue', requireAuth, async (_req, res, next) => 
       updated.push(mapAsset(result.rows[0]));
     }
 
+    await logAuditEvent({
+      actorUser: _req.user,
+      eventType: 'asset.overdue.resolved.bulk',
+      payload: {
+        updatedCount: updated.length,
+        assetIds: updated.map((item) => item.id),
+      },
+      req: _req,
+    });
+
     res.json({ updatedCount: updated.length, assets: updated });
   } catch (error) {
     next(error);
@@ -1421,24 +1634,140 @@ app.get('/api/assets/export.xlsx', requireAuth, async (req, res, next) => {
     const assets = result.rows.map(mapAsset);
 
     const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Ativos');
+    workbook.creator = 'HubSync';
+    workbook.lastModifiedBy = String(req.user?.email || 'HubSync');
+    workbook.created = new Date();
+    workbook.modified = new Date();
+    workbook.properties.date1904 = true;
+
+    const sheet = workbook.addWorksheet('Tablets', {
+      views: [{ state: 'frozen', ySplit: 3 }],
+    });
+
+    const generatedAt = new Date();
+    const summary = {
+      total: assets.length,
+      ok: assets.filter((asset) => asset.status === 'ok').length,
+      attention: assets.filter((asset) => asset.status === 'atencao').length,
+      overdue: assets.filter((asset) => asset.status === 'vencido').length,
+    };
+
+    sheet.mergeCells('A1:H1');
+    sheet.getCell('A1').value = 'HubSync - Relatório de Tablets';
+    sheet.getCell('A1').font = { name: 'Segoe UI', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet.getCell('A1').fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF1A2E7A' },
+    };
+    sheet.getCell('A1').alignment = { horizontal: 'left', vertical: 'middle' };
+    sheet.getRow(1).height = 28;
+
+    sheet.mergeCells('A2:H2');
+    sheet.getCell('A2').value = `Gerado em ${generatedAt.toLocaleString('pt-BR')} por ${req.user?.username || req.user?.email || 'admin'}`;
+    sheet.getCell('A2').font = { name: 'Segoe UI', size: 10, color: { argb: 'FF334155' } };
+    sheet.getCell('A2').alignment = { horizontal: 'left', vertical: 'middle' };
+
     sheet.columns = [
       { header: 'Nome', key: 'name', width: 28 },
-      { header: 'Ultima sincronizacao', key: 'lastSyncAt', width: 22 },
-      { header: 'Vencimento', key: 'renewalDueAt', width: 22 },
-      { header: 'Dias restantes', key: 'daysRemaining', width: 15 },
+      { header: 'Número da pessoa', key: 'personNumber', width: 20 },
+      { header: 'E-mail de renovação', key: 'renewalEmail', width: 28 },
+      { header: 'Última sincronização', key: 'lastSyncAt', width: 20 },
+      { header: 'Vencimento', key: 'renewalDueAt', width: 18 },
+      { header: 'Dias restantes', key: 'daysRemaining', width: 14 },
       { header: 'Status', key: 'status', width: 14 },
+      { header: 'Ambiente', key: 'environment', width: 14 },
     ];
-    sheet.addRows(assets.map((asset) => ({
+
+    sheet.getRow(3).values = sheet.columns.map((column) => column.header);
+    sheet.getRow(3).font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet.getRow(3).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563EB' },
+    };
+    sheet.getRow(3).alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet.getRow(3).height = 22;
+
+    const dataRows = assets.map((asset) => ({
       name: asset.name,
-      lastSyncAt: new Date(asset.lastSyncAt).toLocaleDateString('pt-BR'),
-      renewalDueAt: new Date(asset.renewalDueAt).toLocaleDateString('pt-BR'),
+      personNumber: asset.personNumber || '-',
+      renewalEmail: asset.renewalEmail || '-',
+      lastSyncAt: new Date(asset.lastSyncAt),
+      renewalDueAt: new Date(asset.renewalDueAt),
       daysRemaining: asset.daysRemaining,
-      status: asset.status,
-    })));
+      status: asset.status === 'ok' ? 'ONLINE / OK' : asset.status === 'atencao' ? 'ATENÇÃO' : 'VENCIDO',
+      environment: String(asset.environment || 'producao').toUpperCase(),
+    }));
+
+    sheet.addRows(dataRows);
+
+    const firstDataRow = 4;
+    const lastDataRow = firstDataRow + dataRows.length - 1;
+
+    for (let rowIndex = firstDataRow; rowIndex <= lastDataRow; rowIndex += 1) {
+      const row = sheet.getRow(rowIndex);
+      const statusCell = row.getCell(7);
+      const daysCell = row.getCell(6);
+
+      row.eachCell((cell) => {
+        cell.font = { name: 'Segoe UI', size: 10, color: { argb: 'FF0F172A' } };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        };
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      });
+
+      row.getCell(4).numFmt = 'dd/mm/yyyy';
+      row.getCell(5).numFmt = 'dd/mm/yyyy';
+      daysCell.alignment = { vertical: 'middle', horizontal: 'center' };
+      statusCell.alignment = { vertical: 'middle', horizontal: 'center' };
+
+      if (rowIndex % 2 === 0) {
+        row.eachCell((cell) => {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFF8FAFC' },
+          };
+        });
+      }
+
+      if (statusCell.value === 'VENCIDO') {
+        statusCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: 'FFB42318' } };
+      } else if (statusCell.value === 'ATENÇÃO') {
+        statusCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: 'FFB54708' } };
+      } else {
+        statusCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: 'FF027A48' } };
+      }
+    }
+
+    if (dataRows.length > 0) {
+      sheet.autoFilter = {
+        from: { row: 3, column: 1 },
+        to: { row: 3, column: 8 },
+      };
+    }
+
+    const footerRowIndex = Math.max(5, lastDataRow + 2);
+    sheet.mergeCells(`A${footerRowIndex}:H${footerRowIndex}`);
+    const footerCell = sheet.getCell(`A${footerRowIndex}`);
+    footerCell.value = `Resumo: Total ${summary.total} | Online/OK ${summary.ok} | Atenção ${summary.attention} | Vencidos ${summary.overdue}`;
+    footerCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: 'FF1E293B' } };
+    footerCell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE2E8F0' },
+    };
+    footerCell.alignment = { horizontal: 'left', vertical: 'middle' };
+    sheet.getRow(footerRowIndex).height = 20;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=ativos-hubsync.xlsx');
+    const filenameDate = generatedAt.toISOString().slice(0, 10);
+    res.setHeader('Content-Disposition', `attachment; filename=relatorio-tablets-hubsync-${filenameDate}.xlsx`);
 
     await workbook.xlsx.write(res);
     res.end();
@@ -1458,10 +1787,25 @@ app.delete('/api/assets/:id', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'asset-id-invalid' });
     }
 
+    const current = await query('SELECT id, name FROM assets WHERE id = $1', [id]);
+    if (current.rowCount === 0) {
+      return res.status(404).json({ error: 'asset-not-found' });
+    }
+
     const result = await query('DELETE FROM assets WHERE id = $1 RETURNING id', [id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'asset-not-found' });
     }
+
+    await logAuditEvent({
+      actorUser: req.user,
+      eventType: 'asset.deleted',
+      payload: {
+        assetId: id,
+        assetName: current.rows[0].name,
+      },
+      req,
+    });
 
     res.status(204).send();
   } catch (error) {
@@ -1504,21 +1848,37 @@ app.get('/api/admin/audit', requireAuth, requireAdmin, async (req, res, next) =>
     const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 500);
     const offset = Math.max(Number(req.query.offset || 0), 0);
     const eventType = String(req.query.eventType || '').trim();
+    const category = String(req.query.category || '').trim().toLowerCase();
 
-    let whereClause = '';
+    const clauses = [];
     const params = [];
 
     if (eventType) {
-      whereClause = 'WHERE event_type = $1';
       params.push(eventType);
+      clauses.push(`event_type = $${params.length}`);
     }
+
+    const categoryMap = {
+      user: 'user.%',
+      asset: 'asset.%',
+      auth: 'auth.%',
+      system: 'system.%',
+      notification: 'notification.%',
+    };
+
+    if (category && category !== 'all' && categoryMap[category]) {
+      params.push(categoryMap[category]);
+      clauses.push(`event_type LIKE $${params.length}`);
+    }
+
+    const whereClause = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
     const countResult = await query(
       `SELECT COUNT(*) as count FROM audit_events ${whereClause}`,
       params
     );
 
-    const paramOffset = eventType ? 2 : 1;
+    const paramOffset = params.length + 1;
     const result = await query(
       `SELECT id, actor_user_id, actor_email, target_user_id, target_email, event_type, event_payload, created_at
        FROM audit_events
@@ -1554,12 +1914,56 @@ app.get('/api/admin/system-info', requireAuth, requireAdmin, async (req, res, ne
       nodeEnv: process.env.NODE_ENV,
       port,
       smtpConfigured: Boolean(mailer),
+      smtpVerified,
+      smtpLastError,
+      smtpFrom,
+      smtpHost,
+      smtpPort,
       authSecureStatus: isAuthSecretWeak ? 'weak' : 'strong',
       corsOrigins: allowedOrigins,
       uptime: process.uptime(),
     });
   } catch (error) {
     next(error);
+  }
+});
+
+app.post('/api/admin/smtp/test', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    if (!mailer) {
+      return res.status(400).json({ error: 'smtp-not-configured' });
+    }
+
+    const targetEmail = normalizeEmail(req.body.email || req.user?.email || '');
+    if (!isValidEmail(targetEmail)) {
+      return res.status(400).json({ error: 'email-invalid' });
+    }
+
+    const now = new Date();
+    await sendMail({
+      to: targetEmail,
+      subject: 'HubSync: teste de SMTP',
+      html: buildHubLocalEmailHtml({
+        title: 'Teste de SMTP concluído',
+        subtitle: 'Conexão de e-mail validada no HubSync',
+        greeting: `Olá, <strong>${req.user?.username || 'admin'}</strong>.`,
+        contentHtml: `
+          <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#334155;">Este e-mail confirma que o servidor SMTP está funcionando corretamente.</p>
+          <p style="margin:0;font-size:14px;color:#334155;">Data/hora do teste: <strong>${formatDateTimeForUser(now)}</strong>.</p>
+        `,
+        ctaLabel: '',
+        ctaUrl: '',
+        noteHtml: `
+          <div style="padding:12px 14px;border-radius:10px;background:#ecfeff;border:1px solid #a5f3fc;color:#155e75;font-size:13px;line-height:1.6;">
+            Se você recebeu este e-mail, o SMTP está ativo.
+          </div>
+        `,
+      }),
+    });
+
+    return res.json({ ok: true, message: `E-mail de teste enviado para ${targetEmail}.` });
+  } catch (error) {
+    return next(error);
   }
 });
 
@@ -1601,6 +2005,7 @@ async function start() {
   }
 
   await ensureSchema();
+  await verifyMailerConnection();
   await query(
     `INSERT INTO user_notification_preferences (user_id)
      SELECT id FROM users
@@ -1620,7 +2025,10 @@ async function start() {
 
   app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
-    console.log(`[mail] ${mailer ? 'enabled' : 'disabled'}`);
+    console.log(`[mail] ${mailer ? `enabled (${smtpVerified ? 'verified' : 'not-verified'})` : 'disabled'}`);
+    if (smtpLastError && mailer) {
+      console.log(`[mail-error] ${smtpLastError}`);
+    }
   });
 }
 

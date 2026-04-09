@@ -36,7 +36,22 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 const tokenStorageKey = 'hubsync_auth_token';
+const themeStorageKey = 'hubsync_theme';
 let refreshTimer = null;
+const autoRefreshMs = Number(import.meta.env.VITE_AUTO_REFRESH_MS || 0);
+
+function getInitialTheme() {
+  const savedTheme = safeGetStorage(themeStorageKey);
+  if (savedTheme === 'dark' || savedTheme === 'light') {
+    return savedTheme;
+  }
+
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+    return 'light';
+  }
+
+  return 'dark';
+}
 
 function safeGetStorage(key) {
   try {
@@ -65,6 +80,7 @@ function safeRemoveStorage(key) {
 const state = {
   user: null,
   token: safeGetStorage(tokenStorageKey),
+  theme: getInitialTheme(),
   authMode: 'login',
   authLoading: false,
   authError: '',
@@ -75,7 +91,12 @@ const state = {
   users: [],
   usersLoading: false,
   usersError: '',
+  usersQuery: '',
+  usersPage: 0,
+  usersLimit: 10,
+  usersTotal: 0,
   usersModalOpen: false,
+  notices: [],
   notificationPreferences: {
     notifyNewAsset: true,
     notifyDueSoon: true,
@@ -89,6 +110,7 @@ const state = {
   summary: { totalMonitored: 0, onlineOk: 0, attention: 0, overdue: 0 },
   assets: [],
   search: '',
+  statusFilter: 'all',
   loading: true,
   editingAssetId: null,
   adminMode: false,
@@ -100,9 +122,50 @@ const state = {
   adminAuditLimit: 25,
   adminAuditTotal: 0,
   adminAuditEventTypeFilter: '',
+  adminAuditCategoryFilter: 'all',
+  adminSection: 'overview',
 };
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
+function pushNotice(message, type = 'success') {
+  const id = Date.now() + Math.floor(Math.random() * 1000);
+  state.notices = [...state.notices, { id, message, type }].slice(-5);
+  render();
+
+  window.setTimeout(() => {
+    state.notices = state.notices.filter((notice) => notice.id !== id);
+    render();
+  }, 3200);
+}
+
+function renderToasts() {
+  if (!state.notices.length) return '';
+  return `
+    <div class="toast-stack" aria-live="polite" aria-atomic="false">
+      ${state.notices.map((notice) => `
+        <div class="toast toast-${notice.type}">${notice.message}</div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function applyTheme(theme) {
+  const normalized = theme === 'light' ? 'light' : 'dark';
+  state.theme = normalized;
+  document.documentElement.setAttribute('data-theme', normalized);
+  safeSetStorage(themeStorageKey, normalized);
+}
+
+function toggleTheme() {
+  applyTheme(state.theme === 'dark' ? 'light' : 'dark');
+}
+
+applyTheme(state.theme);
+
+const apiBaseUrl = (() => {
+  const configured = String(import.meta.env.VITE_API_BASE_URL || '').trim();
+  const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  return isLocalHost ? '' : configured;
+})();
 
 function renderBootState(message = 'Carregando...') {
   app.innerHTML = `
@@ -145,6 +208,17 @@ function roleLabel(role) {
   return role === 'admin' ? 'Admin' : 'Normal';
 }
 
+function applyAssetFilters(assets) {
+  const search = String(state.search || '').trim().toLowerCase();
+  const statusFilter = String(state.statusFilter || 'all');
+
+  return (assets || []).filter((asset) => {
+    const matchesSearch = !search || String(asset.name || '').toLowerCase().includes(search);
+    const matchesStatus = statusFilter === 'all' || asset.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+}
+
 function getResetTokenFromHash() {
   const hash = window.location.hash.replace(/^#/, '');
   if (!hash.startsWith('reset-password')) return '';
@@ -164,13 +238,17 @@ function getVerifyTokenFromHash() {
 }
 
 function ensureAutoRefresh() {
+  if (!Number.isFinite(autoRefreshMs) || autoRefreshMs < 10000) {
+    return;
+  }
+
   if (refreshTimer) return;
 
   refreshTimer = setInterval(() => {
     if (state.user) {
       loadData().catch(() => {});
     }
-  }, 60000);
+  }, autoRefreshMs);
 }
 
 function stopAutoRefresh() {
@@ -181,6 +259,15 @@ function stopAutoRefresh() {
 
 function formatDate(value) {
   return new Date(value).toLocaleDateString('pt-BR');
+}
+
+function toDateInputValue(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function formatPhoneInput(value) {
@@ -235,6 +322,10 @@ function authErrorMessage(errorCode, isRegister) {
     'email-already-registered': 'Esse e-mail já está cadastrado.',
     'invalid-credentials': 'E-mail ou senha inválidos.',
     'email-not-verified': 'Seu e-mail ainda não foi confirmado. Digite o código recebido para concluir o acesso.',
+    'email-send-failed': 'Conta criada, mas falhou o envio do e-mail. Tente reenviar o código.',
+    'too-many-auth-requests': 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.',
+    'too-many-requests': 'Muitas requisições em pouco tempo. Aguarde alguns minutos e tente novamente.',
+    'internal-server-error': 'Erro interno no servidor. Tente novamente em instantes.',
   };
 
   if (String(errorCode || '').startsWith('password-')) {
@@ -246,8 +337,8 @@ function authErrorMessage(errorCode, isRegister) {
   }
 
   return isRegister
-    ? 'Não foi possível criar a conta. Verifique os dados e tente novamente.'
-    : 'Não foi possível autenticar. Verifique os dados e tente novamente.';
+    ? `Não foi possível criar a conta. ${errorCode ? `(${errorCode})` : 'Verifique os dados e tente novamente.'}`
+    : `Não foi possível autenticar. ${errorCode ? `(${errorCode})` : 'Verifique os dados e tente novamente.'}`;
 }
 
 function evaluatePasswordRules(password) {
@@ -485,8 +576,13 @@ function renderAuth() {
         });
 
         const data = await response.json();
-        state.authError = '';
-        state.authNotice = data.message || 'Se o e-mail existir, enviaremos um novo código de confirmação.';
+        if (!response.ok) {
+          state.authError = 'Não foi possível reenviar o código agora.';
+          state.authNotice = '';
+        } else {
+          state.authError = '';
+          state.authNotice = data.message || 'Se o e-mail existir, enviaremos um novo código de confirmação.';
+        }
         renderAuth();
       } catch {
         state.authError = 'Não foi possível reenviar o código de confirmação.';
@@ -682,10 +778,18 @@ function renderAdminPanel() {
   const dashboard = state.adminDashboard || {};
   const systemInfo = state.adminSystemInfo || {};
   const auditEvents = state.adminAuditEvents || [];
-  const totalPages = Math.ceil(state.adminAuditTotal / state.adminAuditLimit);
+  const adminUsers = state.users || [];
+  const totalPages = Math.max(1, Math.ceil(state.adminAuditTotal / state.adminAuditLimit));
   const currentPage = state.adminAuditPage + 1;
   const canPrevAudit = state.adminAuditPage > 0;
   const canNextAudit = currentPage < totalPages;
+  const usersTotalPages = Math.max(1, Math.ceil(state.usersTotal / state.usersLimit));
+  const usersCurrentPage = state.usersPage + 1;
+  const canPrevUsers = state.usersPage > 0;
+  const canNextUsers = usersCurrentPage < usersTotalPages;
+  const currentAdminSection = ['overview', 'audit', 'system', 'users'].includes(state.adminSection)
+    ? state.adminSection
+    : 'overview';
 
   app.innerHTML = `
     <div class="shell">
@@ -700,6 +804,9 @@ function renderAdminPanel() {
         <div class="topbar-actions">
           <button class="ghost-button" data-action="back-to-dashboard">← Dashboard normal</button>
           <span class="user-chip">${state.user.username} (Admin)</span>
+          <button class="icon-button" data-action="toggle-theme" aria-label="Alternar tema" title="Alternar tema">
+            <span>${state.theme === 'dark' ? '◐' : '☀'}</span>
+          </button>
           <button class="icon-button" data-action="logout" aria-label="Sair" title="Sair">
             <span>↗</span>
           </button>
@@ -708,12 +815,13 @@ function renderAdminPanel() {
 
       <main class="content admin-content">
         <nav class="admin-nav">
-          <button class="admin-nav-item ${state.adminAuditEventTypeFilter === '' ? 'active' : ''}" data-admin-section="overview">📊 Visão Geral</button>
-          <button class="admin-nav-item ${state.adminAuditEventTypeFilter !== '' || state.adminAuditEvents.length > 0 ? 'active' : ''}" data-admin-section="audit">📋 Auditoria</button>
-          <button class="admin-nav-item" data-admin-section="system">⚙️ Sistema</button>
-          <button class="admin-nav-item" data-admin-section="users" data-action="open-users">👥 Usuarios</button>
+          <button class="admin-nav-item ${currentAdminSection === 'overview' ? 'active' : ''}" data-admin-section="overview">📊 Visão Geral</button>
+          <button class="admin-nav-item ${currentAdminSection === 'audit' ? 'active' : ''}" data-admin-section="audit">📋 Auditoria</button>
+          <button class="admin-nav-item ${currentAdminSection === 'system' ? 'active' : ''}" data-admin-section="system">⚙️ Sistema</button>
+          <button class="admin-nav-item ${currentAdminSection === 'users' ? 'active' : ''}" data-admin-section="users">👥 Usuarios</button>
         </nav>
 
+        ${currentAdminSection === 'overview' ? `
         <section class="admin-panel-section admin-overview">
           <div class="admin-stats-grid">
             <article class="admin-stat-card">
@@ -752,8 +860,17 @@ function renderAdminPanel() {
             </div>
           ` : ''}
         </section>
+        ` : ''}
 
+        ${currentAdminSection === 'audit' ? `
         <section class="admin-panel-section admin-audit">
+          <div class="audit-category-row">
+            <button class="audit-category-chip ${state.adminAuditCategoryFilter === 'all' ? 'active' : ''}" data-audit-category="all">Todos</button>
+            <button class="audit-category-chip ${state.adminAuditCategoryFilter === 'user' ? 'active' : ''}" data-audit-category="user">Usuários</button>
+            <button class="audit-category-chip ${state.adminAuditCategoryFilter === 'asset' ? 'active' : ''}" data-audit-category="asset">Ativos</button>
+            <button class="audit-category-chip ${state.adminAuditCategoryFilter === 'system' ? 'active' : ''}" data-audit-category="system">Sistema</button>
+          </div>
+
           <div class="admin-audit-controls">
             <input
               type="text"
@@ -798,7 +915,9 @@ function renderAdminPanel() {
             </div>
           ` : '<div class="empty-state">Nenhum evento encontrado.</div>'}
         </section>
+        ` : ''}
 
+        ${currentAdminSection === 'system' ? `
         <section class="admin-panel-section admin-system">
           ${systemInfo ? `
             <div class="admin-system-info">
@@ -814,7 +933,15 @@ function renderAdminPanel() {
                 </div>
                 <div class="info-item">
                   <span>E-mail (SMTP)</span>
-                  <strong>${systemInfo.smtpConfigured ? '✓ Ativo' : '✗ Desativado'}</strong>
+                  <strong>${systemInfo.smtpConfigured ? (systemInfo.smtpVerified ? '✓ Ativo e validado' : '⚠ Configurado (pendente)') : '✗ Desativado'}</strong>
+                </div>
+                <div class="info-item">
+                  <span>SMTP Host</span>
+                  <strong>${systemInfo.smtpHost || '—'}</strong>
+                </div>
+                <div class="info-item">
+                  <span>SMTP Porta</span>
+                  <strong>${systemInfo.smtpPort || '—'}</strong>
                 </div>
                 <div class="info-item">
                   <span>AUTH_SECRET</span>
@@ -829,10 +956,120 @@ function renderAdminPanel() {
                   <strong>${(systemInfo.corsOrigins || []).join(', ') || '—'}</strong>
                 </div>
               </div>
+
+              <div class="admin-audit-controls" style="margin-top:16px;">
+                <input type="email" id="smtpTestEmail" class="admin-filter-input" value="${state.user?.email || ''}" placeholder="teste@empresa.com" />
+                <button class="primary-button" id="sendSmtpTest">Enviar teste SMTP</button>
+              </div>
+              ${systemInfo.smtpLastError ? `<p class="auth-error" style="margin-top:8px;">Último erro SMTP: ${systemInfo.smtpLastError}</p>` : ''}
             </div>
           ` : '<div class="empty-state">Carregando informações do sistema...</div>'}
         </section>
+        ` : ''}
+
+        ${currentAdminSection === 'users' ? `
+        <section class="admin-panel-section admin-users" id="adminUsersSection">
+          <div class="admin-system-info">
+            <div class="admin-audit-controls">
+              <h3 style="margin:0;">Usuários e Acessos</h3>
+              <button class="ghost-button" id="refreshUsersAdmin">Atualizar lista</button>
+            </div>
+
+            <div class="admin-audit-controls">
+              <input
+                type="text"
+                id="usersSearchInput"
+                placeholder="Buscar por nome ou e-mail..."
+                class="admin-filter-input"
+                value="${state.usersQuery}"
+              />
+              <button class="primary-button" id="applyUsersSearch">Buscar</button>
+              <button class="ghost-button" id="clearUsersSearch">Limpar</button>
+            </div>
+
+            <p class="users-helper">Promova/rebaixe acessos, exclua contas e reenvie o código de verificação quando necessário.</p>
+
+            <div class="users-table-shell">
+              ${state.usersLoading
+                ? '<p class="users-empty">Carregando usuários...</p>'
+                : adminUsers.length === 0
+                  ? '<p class="users-empty">Nenhum usuário cadastrado.</p>'
+                  : `
+                    <table class="users-table">
+                      <thead>
+                        <tr>
+                          <th>Nome</th>
+                          <th>E-mail</th>
+                          <th>Verificado</th>
+                          <th>Nível de acesso</th>
+                          <th>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${adminUsers.map((user) => {
+                          const isCurrentUser = user.id === state.user.id;
+                          const nextRole = user.role === 'admin' ? 'viewer' : 'admin';
+                          const actionLabel = user.role === 'admin' ? 'Remover Admin' : 'Tornar Admin';
+                          return `
+                            <tr>
+                              <td data-label="Nome">${user.username}</td>
+                              <td data-label="E-mail">${user.email}</td>
+                              <td data-label="Verificado">${user.emailVerified ? 'Sim' : 'Nao'}</td>
+                              <td data-label="Nível de acesso"><span class="role-badge ${user.role === 'admin' ? 'role-admin' : 'role-viewer'}">${roleLabel(user.role)}</span></td>
+                              <td data-label="Ações">
+                                <div class="user-actions">
+                                  <button
+                                    class="table-action-button"
+                                    data-role-toggle="${user.id}"
+                                    data-next-role="${nextRole}"
+                                    ${isCurrentUser ? 'disabled title="Você não pode alterar o seu próprio acesso"' : ''}
+                                  >
+                                    ${actionLabel}
+                                  </button>
+                                  ${user.emailVerified
+                                    ? ''
+                                    : `<button class="table-action-button" data-user-resend="${user.email}">Reenviar código</button>`}
+                                  ${isCurrentUser
+                                    ? ''
+                                    : `<button class="table-action-button user-delete-button" data-user-delete="${user.id}">Excluir usuário</button>`}
+                                </div>
+                              </td>
+                            </tr>
+                          `;
+                        }).join('')}
+                      </tbody>
+                    </table>
+                  `}
+            </div>
+
+            <div class="admin-pagination">
+              <button class="ghost-button" id="usersPrevBtn" ${!canPrevUsers ? 'disabled' : ''}>← Anterior</button>
+              <span>Página ${usersCurrentPage} de ${usersTotalPages} (Total: ${state.usersTotal})</span>
+              <button class="ghost-button" id="usersNextBtn" ${!canNextUsers ? 'disabled' : ''}>Próxima →</button>
+            </div>
+
+            ${state.usersError ? `<p class="auth-error">${state.usersError}</p>` : ''}
+
+            <form id="userCreateFormAdmin" class="auth-form users-create-form" style="margin-top:16px;">
+              <label>
+                <span>Nome do usuário</span>
+                <input name="username" placeholder="Ex.: João Silva" required />
+              </label>
+              <label>
+                <span>E-mail</span>
+                <input name="email" type="email" placeholder="usuario@empresa.com" required />
+              </label>
+              <label>
+                <span>Senha</span>
+                <input name="password" type="password" minlength="10" placeholder="Mínimo 10 caracteres" required />
+              </label>
+              <button class="primary-button" type="submit">Cadastrar usuário</button>
+            </form>
+          </div>
+        </section>
+        ` : ''}
       </main>
+      ${renderToasts()}
     </div>
   `;
 
@@ -853,21 +1090,201 @@ function renderAdminPanel() {
       state.users = [];
       state.usersModalOpen = false;
       state.adminMode = false;
+      state.adminSection = 'overview';
       safeRemoveStorage(tokenStorageKey);
+      stopAutoRefresh();
       render();
     });
   }
 
-  const openUsersButton = document.querySelector('[data-action="open-users"]');
-  if (openUsersButton) {
-    openUsersButton.addEventListener('click', async () => {
-      state.usersModalOpen = true;
+  document.querySelectorAll('[data-action="toggle-theme"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      toggleTheme();
+      renderAdminPanel();
+    });
+  });
+
+  document.querySelectorAll('[data-admin-section]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const nextSection = String(button.getAttribute('data-admin-section') || 'overview');
+      if (!['overview', 'audit', 'system', 'users'].includes(nextSection)) return;
+      if (state.adminSection === nextSection) return;
+
+      state.adminSection = nextSection;
+      renderAdminPanel();
+
+      if (nextSection === 'users' && state.users.length === 0) {
+        state.usersLoading = true;
+        state.usersError = '';
+        renderAdminPanel();
+        await loadUsers();
+      }
+    });
+  });
+
+  const refreshUsersAdmin = document.querySelector('#refreshUsersAdmin');
+  if (refreshUsersAdmin) {
+    refreshUsersAdmin.addEventListener('click', async () => {
       state.usersLoading = true;
       state.usersError = '';
       renderAdminPanel();
       await loadUsers();
     });
   }
+
+  const applyUsersSearch = document.querySelector('#applyUsersSearch');
+  if (applyUsersSearch) {
+    applyUsersSearch.addEventListener('click', async () => {
+      const input = document.querySelector('#usersSearchInput');
+      state.usersQuery = String(input?.value || '').trim();
+      state.usersPage = 0;
+      await loadUsers();
+    });
+  }
+
+  const clearUsersSearch = document.querySelector('#clearUsersSearch');
+  if (clearUsersSearch) {
+    clearUsersSearch.addEventListener('click', async () => {
+      state.usersQuery = '';
+      state.usersPage = 0;
+      await loadUsers();
+    });
+  }
+
+  const usersPrevBtn = document.querySelector('#usersPrevBtn');
+  if (usersPrevBtn && !usersPrevBtn.hasAttribute('disabled')) {
+    usersPrevBtn.addEventListener('click', async () => {
+      state.usersPage = Math.max(0, state.usersPage - 1);
+      await loadUsers();
+    });
+  }
+
+  const usersNextBtn = document.querySelector('#usersNextBtn');
+  if (usersNextBtn && !usersNextBtn.hasAttribute('disabled')) {
+    usersNextBtn.addEventListener('click', async () => {
+      state.usersPage += 1;
+      await loadUsers();
+    });
+  }
+
+  const userCreateFormAdmin = document.querySelector('#userCreateFormAdmin');
+  if (userCreateFormAdmin) {
+    userCreateFormAdmin.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const formData = new FormData(userCreateFormAdmin);
+      state.usersError = '';
+      try {
+        const response = await apiFetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: String(formData.get('username') || '').trim(),
+            email: String(formData.get('email') || '').trim(),
+            password: String(formData.get('password') || ''),
+          }),
+        });
+
+        if (!response.ok) {
+          state.usersError = 'Não foi possível cadastrar usuário. Verifique se o e-mail já existe.';
+          renderAdminPanel();
+          return;
+        }
+
+        userCreateFormAdmin.reset();
+        pushNotice('Usuário cadastrado com sucesso.', 'success');
+        await loadUsers();
+      } catch {
+        state.usersError = 'Falha ao cadastrar usuário.';
+        renderAdminPanel();
+      }
+    });
+  }
+
+  document.querySelectorAll('[data-user-resend]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const email = String(button.getAttribute('data-user-resend') || '').trim();
+      if (!email) return;
+
+      state.usersError = '';
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/auth/resend-verification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          state.usersError = 'Não foi possível reenviar o código.';
+        } else {
+          state.usersError = '';
+          pushNotice(data.message || 'Código reenviado com sucesso.', 'success');
+        }
+      } catch {
+        state.usersError = 'Falha ao reenviar o código.';
+      }
+
+      renderAdminPanel();
+    });
+  });
+
+  document.querySelectorAll('[data-role-toggle]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const userId = Number(button.getAttribute('data-role-toggle'));
+      const nextRole = button.getAttribute('data-next-role');
+
+      state.usersError = '';
+      try {
+        const response = await apiFetch(`/api/users/${userId}/role`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: nextRole }),
+        });
+
+        if (!response.ok) {
+          state.usersError = 'Não foi possível atualizar o nível de acesso.';
+          renderAdminPanel();
+          return;
+        }
+
+        pushNotice('Nível de acesso atualizado.', 'success');
+        await loadUsers();
+      } catch {
+        state.usersError = 'Falha ao atualizar o nível de acesso.';
+        renderAdminPanel();
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-user-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const userId = button.getAttribute('data-user-delete');
+      if (!window.confirm('Excluir este usuário?')) return;
+
+      state.usersError = '';
+      try {
+        const response = await apiFetch(`/api/users/${userId}`, { method: 'DELETE' });
+        if (!response.ok && response.status !== 204) {
+          if (response.status === 403) {
+            state.usersError = 'Você não pode excluir seu próprio usuário.';
+          } else if (response.status === 404) {
+            state.usersError = 'Usuário não encontrado.';
+          } else {
+            state.usersError = 'Não foi possível excluir o usuário.';
+          }
+          renderAdminPanel();
+          return;
+        }
+
+        state.usersError = '';
+        pushNotice('Usuário excluído com sucesso.', 'success');
+        await loadUsers();
+      } catch {
+        state.usersError = 'Falha ao excluir o usuário.';
+        renderAdminPanel();
+      }
+    });
+  });
 
   const applyFilterBtn = document.querySelector('#applyAuditFilter');
   if (applyFilterBtn) {
@@ -879,6 +1296,17 @@ function renderAdminPanel() {
       renderAdminPanel();
     });
   }
+
+  document.querySelectorAll('[data-audit-category]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const category = String(button.getAttribute('data-audit-category') || 'all');
+      if (state.adminAuditCategoryFilter === category) return;
+      state.adminAuditCategoryFilter = category;
+      state.adminAuditPage = 0;
+      await loadAdminAudit();
+      renderAdminPanel();
+    });
+  });
 
   const prevBtn = document.querySelector('#auditPrevBtn');
   if (prevBtn && canPrevAudit) {
@@ -894,6 +1322,38 @@ function renderAdminPanel() {
     nextBtn.addEventListener('click', async () => {
       state.adminAuditPage += 1;
       await loadAdminAudit();
+      renderAdminPanel();
+    });
+  }
+
+  const sendSmtpTest = document.querySelector('#sendSmtpTest');
+  if (sendSmtpTest) {
+    sendSmtpTest.addEventListener('click', async () => {
+      const emailInput = document.querySelector('#smtpTestEmail');
+      const email = String(emailInput?.value || '').trim();
+      if (!email) {
+        pushNotice('Informe um e-mail para o teste SMTP.', 'error');
+        return;
+      }
+
+      try {
+        const response = await apiFetch('/api/admin/smtp/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          pushNotice('Falha ao enviar teste SMTP.', 'error');
+        } else {
+          pushNotice(payload.message || 'Teste SMTP enviado com sucesso.', 'success');
+        }
+      } catch {
+        pushNotice('Erro ao executar teste SMTP.', 'error');
+      }
+
+      await loadAdminSystemInfo();
       renderAdminPanel();
     });
   }
@@ -919,6 +1379,7 @@ function render() {
     ? `<input name="renewalPeriodDays" type="number" min="15" step="1" value="${editingAsset.renewalPeriodDays}" required />`
     : '<input value="15 dias fixos" disabled />';
   const renewalEmailValue = editingAsset ? (editingAsset.renewalEmail || '') : '';
+  const syncDateValue = editingAsset ? toDateInputValue(editingAsset.lastSyncAt) : toDateInputValue(new Date().toISOString());
   const summaryCards = [
     { title: 'TOTAL MONITORADO', value: state.summary.totalMonitored, accent: '' },
     { title: 'ONLINE / OK', value: state.summary.onlineOk, accent: 'accent-ok' },
@@ -938,10 +1399,9 @@ function render() {
         </div>
         <div class="topbar-actions">
           ${isAdminUser() ? '<button class="danger-button" data-action="open-admin">🔑 Painel Admin</button>' : ''}
-          ${isAdminUser() ? '<button class="ghost-button" data-action="open-users">Gerenciar Acessos</button>' : ''}
           <span class="user-chip">${state.user.username}</span>
-          <button class="icon-button" aria-label="Alternar tema" title="Alternar tema">
-            <span>◔</span>
+          <button class="icon-button" data-action="toggle-theme" aria-label="Alternar tema" title="Alternar tema">
+            <span>${state.theme === 'dark' ? '◐' : '☀'}</span>
           </button>
           ${manageAssets ? '<button class="primary-button" data-action="open-form">+ Novo Ativo</button>' : ''}
           <button class="icon-button" data-action="logout" aria-label="Sair" title="Sair">
@@ -993,9 +1453,18 @@ function render() {
             <span>⌕</span>
             <input id="searchInput" value="${state.search}" placeholder="Buscar tablet...(/)" />
           </label>
+          <div class="status-filter-pro" role="group" aria-label="Filtrar por status">
+            <span>Status</span>
+            <div class="status-chip-group">
+              <button class="status-chip ${state.statusFilter === 'all' ? 'active' : ''}" data-status-filter="all">Todos</button>
+              <button class="status-chip ${state.statusFilter === 'ok' ? 'active' : ''}" data-status-filter="ok">Online / OK</button>
+              <button class="status-chip ${state.statusFilter === 'atencao' ? 'active' : ''}" data-status-filter="atencao">Atenção</button>
+              <button class="status-chip ${state.statusFilter === 'vencido' ? 'active' : ''}" data-status-filter="vencido">Vencido</button>
+            </div>
+          </div>
           <div class="toolbar-actions">
             ${manageAssets ? '<button class="danger-button" data-action="resolve-overdue">Resolver Vencidos</button>' : ''}
-            <a class="ghost-button" href="${apiBaseUrl}/api/assets/export.xlsx" target="_blank" rel="noreferrer">Exportar XLS</a>
+            <button class="ghost-button" data-action="export-xls">Exportar XLS</button>
           </div>
         </section>
 
@@ -1061,6 +1530,10 @@ function render() {
         <label>
           <span>Renovação mínima</span>
           ${renewalField}
+        </label>
+        <label>
+          <span>Data da última sincronização</span>
+          <input name="lastSyncDate" type="date" value="${syncDateValue}" required />
         </label>
         <label>
           <span>E-mail de renovação</span>
@@ -1153,6 +1626,8 @@ function render() {
         </form>
       </div>
     </dialog>
+
+    ${renderToasts()}
   `;
 
   const usersModal = document.querySelector('#usersModal');
@@ -1179,29 +1654,21 @@ function bindEvents() {
   const closeUsersButton = usersModal ? usersModal.querySelector('button[value="close-users"]') : null;
   const userCreateForm = document.querySelector('#userCreateForm');
   const openAdminButton = document.querySelector('[data-action="open-admin"]');
-  const openUsersButton = document.querySelector('[data-action="open-users"]');
   const logoutButton = document.querySelector('[data-action="logout"]');
   const openFormButton = document.querySelector('[data-action="open-form"]');
+  const toggleThemeButton = document.querySelector('[data-action="toggle-theme"]');
+  const exportXlsButton = document.querySelector('[data-action="export-xls"]');
   const resolveOverdueButton = document.querySelector('[data-action="resolve-overdue"]');
   const notificationPrefsForm = document.querySelector('#notificationPrefsForm');
 
   if (openAdminButton) {
     openAdminButton.addEventListener('click', async () => {
       state.adminMode = true;
+      state.adminSection = 'overview';
       await loadAdminDashboard();
       await loadAdminAudit();
       await loadAdminSystemInfo();
       render();
-    });
-  }
-
-  if (openUsersButton) {
-    openUsersButton.addEventListener('click', async () => {
-      state.usersModalOpen = true;
-      state.usersLoading = true;
-      state.usersError = '';
-      render();
-      await loadUsers();
     });
   }
 
@@ -1268,8 +1735,45 @@ function bindEvents() {
       state.users = [];
       state.usersModalOpen = false;
       safeRemoveStorage(tokenStorageKey);
-      localStorage.removeItem(tokenStorageKey);
+      stopAutoRefresh();
       render();
+    });
+  }
+
+  if (toggleThemeButton) {
+    toggleThemeButton.addEventListener('click', () => {
+      toggleTheme();
+      render();
+    });
+  }
+
+  if (exportXlsButton) {
+    exportXlsButton.addEventListener('click', async () => {
+      try {
+        const response = await apiFetch('/api/assets/export.xlsx');
+        if (!response.ok) {
+          pushNotice('Não foi possível exportar a planilha.', 'error');
+          return;
+        }
+
+        const blob = await response.blob();
+        const disposition = String(response.headers.get('content-disposition') || '');
+        const fileNameMatch = disposition.match(/filename=([^;]+)/i);
+        const fileName = (fileNameMatch?.[1] || 'relatorio-tablets-hubsync.xlsx').replace(/"/g, '').trim();
+
+        const downloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(downloadUrl);
+
+        pushNotice('Planilha exportada com sucesso.', 'success');
+      } catch {
+        pushNotice('Falha ao exportar a planilha.', 'error');
+      }
     });
   }
 
@@ -1357,7 +1861,7 @@ function bindEvents() {
       const prefillEmail = String(asset?.renewalEmail || '').trim();
       const recipientEmail = prefillEmail || window.prompt('Digite o e-mail para enviar a renovação:') || '';
       if (!recipientEmail.trim()) {
-        window.alert('Informe um e-mail válido no cadastro do ativo ou no envio manual.');
+        pushNotice('Informe um e-mail válido no cadastro do ativo ou no envio manual.', 'error');
         return;
       }
 
@@ -1369,13 +1873,13 @@ function bindEvents() {
         });
 
         if (!response.ok) {
-          window.alert('Não foi possível enviar o e-mail de renovação.');
+          pushNotice('Não foi possível enviar o e-mail de renovação.', 'error');
           return;
         }
 
-        window.alert('E-mail de renovação enviado com sucesso.');
+        pushNotice('E-mail de renovação enviado com sucesso.', 'success');
       } catch {
-        window.alert('Falha ao enviar o e-mail de renovação.');
+        pushNotice('Falha ao enviar o e-mail de renovação.', 'error');
       }
     });
   });
@@ -1458,6 +1962,15 @@ function bindEvents() {
     await loadData();
   });
 
+  document.querySelectorAll('[data-status-filter]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const next = String(button.getAttribute('data-status-filter') || 'all');
+      if (state.statusFilter === next) return;
+      state.statusFilter = next;
+      await loadData();
+    });
+  });
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const formData = new FormData(form);
@@ -1465,19 +1978,38 @@ function bindEvents() {
     const endpoint = isEditing ? `/api/assets/${state.editingAssetId}` : '/api/assets';
     const method = isEditing ? 'PUT' : 'POST';
 
-    await apiFetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: formData.get('name'),
         personNumber: String(formData.get('personNumber') || '').trim(),
         renewalEmail: String(formData.get('renewalEmail') || '').trim().toLowerCase(),
+        lastSyncDate: String(formData.get('lastSyncDate') || '').trim(),
         renewalPeriodDays: isEditing ? Number(formData.get('renewalPeriodDays')) : 15,
       }),
     });
+
+    if (!response.ok) {
+      let message = 'Não foi possível salvar o ativo.';
+      try {
+        const data = await response.json();
+        if (data?.error === 'last-sync-date-invalid') {
+          message = 'Informe uma data de sincronização válida.';
+        } else if (data?.error === 'last-sync-date-in-future') {
+          message = 'A data de sincronização não pode estar no futuro.';
+        }
+      } catch {
+        // Keep generic message.
+      }
+      pushNotice(message, 'error');
+      return;
+    }
+
     state.editingAssetId = null;
     form.reset();
     modal.close();
+    pushNotice(isEditing ? 'Ativo atualizado com sucesso.' : 'Ativo cadastrado com sucesso.', 'success');
     await loadData();
   });
 }
@@ -1495,9 +2027,7 @@ async function loadData() {
   const payload = await response.json();
 
   state.summary = payload.summary;
-  state.assets = state.search
-    ? payload.assets.filter((asset) => asset.name.toLowerCase().includes(state.search.toLowerCase()))
-    : payload.assets;
+  state.assets = applyAssetFilters(payload.assets);
   state.loading = false;
   render();
 }
@@ -1507,8 +2037,30 @@ async function loadUsers() {
   state.usersError = '';
 
   try {
-    const response = await apiFetch('/api/users');
-    state.users = await response.json();
+    const params = new URLSearchParams({
+      limit: String(state.usersLimit),
+      offset: String(state.usersPage * state.usersLimit),
+    });
+    if (state.usersQuery) {
+      params.append('q', state.usersQuery);
+    }
+
+    const response = await apiFetch(`/api/users?${params.toString()}`);
+    const payload = await response.json();
+
+    if (Array.isArray(payload)) {
+      state.users = payload;
+      state.usersTotal = payload.length;
+    } else {
+      state.users = payload.items || [];
+      state.usersTotal = Number(payload.total || 0);
+      state.usersLimit = Number(payload.limit || state.usersLimit);
+
+      const maxPage = Math.max(0, Math.ceil(state.usersTotal / state.usersLimit) - 1);
+      if (state.usersPage > maxPage) {
+        state.usersPage = maxPage;
+      }
+    }
   } catch {
     state.usersError = 'Não foi possível carregar usuários.';
   }
@@ -1561,6 +2113,9 @@ async function loadAdminAudit() {
     });
     if (state.adminAuditEventTypeFilter) {
       params.append('eventType', state.adminAuditEventTypeFilter);
+    }
+    if (state.adminAuditCategoryFilter && state.adminAuditCategoryFilter !== 'all') {
+      params.append('category', state.adminAuditCategoryFilter);
     }
 
     const response = await apiFetch(`/api/admin/audit?${params.toString()}`);
